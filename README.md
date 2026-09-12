@@ -1,7 +1,8 @@
-# dsh-plugin-local-model
+<img width="812" height="798" alt="image" 源代码="https://github.com/user-attachments/assets/9d89b9be-0c91-4a2e-bef8-7f4e3044f89c" /># dsh-plugin-local-model
 
 给 **DeepSeek Harness（dsh）** 用的本地模型插件：在设置里管理本地 GGUF 模型，
 **第一条对话自动拉起 llama.cpp 载入模型，连续 5 分钟无交互自动卸载并释放显存**。
+![正在上传image.png…]()
 
 模型和 llama 工具由用户自己下载，放进插件规定的目录即可 —— 插件不联网拉模型、不碰工作区文件、
 除本机回环地址外不监听任何端口。
@@ -25,7 +26,7 @@
 | ④ 连续 5 分钟无交互自动卸载释放资源 | `idleUnloadMinutes`（默认 5）；判定规则抽成纯函数 `shouldUnload()`，`src/lifecycle.ts` |
 
 「不占资源」是硬指标：**没有对话时磁盘上只有一个常驻 HTTP 代理进程（不加载模型、不占显存）**，
-llama-server 只在第一个请求进来时才被 spawn。这一条有端到端测试兜底（见第 9 节）。
+llama-server 仅在首次请求到达时才会被启动。这一点有端到端测试作为保障（详见第9节）。
 
 ---
 
@@ -53,9 +54,9 @@ npm run verify
 ```
 A. bundle 清单
   ✓ dsh.bundle.patch = ./cordis.patch.yml
-  ✓ patch 的 name 是包名：dsh-plugin-local-model
-B. profile 挂载状态
-  ✗ desktop → 已安装为依赖，但不在 dsh.profile.bundles 里（这就是「已安装，未生效」）
+✓ 补丁的名称即为包名：dsh-plugin-local-model
+B. 配置文件挂载状态
+✗ 桌面 → 已安装为依赖，但不在 dsh.profile.bundles 里（这就是「已安装，未生效」）
 ```
 
 ### 为什么必须声明 `dsh.bundle`

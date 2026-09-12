@@ -1,5 +1,3 @@
-<img width="812" height="798" alt="image" 源代码="https://github.com/user-attachments/assets/9d89b9be-0c91-4a2e-bef8-7f4e3044f89c" /># dsh-plugin-local-model
-
 给 **DeepSeek Harness（dsh）** 用的本地模型插件：在设置里管理本地 GGUF 模型，
 **第一条对话自动拉起 llama.cpp 载入模型，连续 5 分钟无交互自动卸载并释放显存**。
 ![正在上传image.png…]()

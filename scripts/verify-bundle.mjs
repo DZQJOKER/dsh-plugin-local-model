@@ -160,6 +160,21 @@ if (explicitHome) homeCandidates.push(path.resolve(explicitHome))
 homeCandidates.push(path.join(os.homedir(), '.dsh'))
 if (process.platform === 'win32' && process.env.APPDATA) {
   homeCandidates.push(path.join(process.env.APPDATA, 'dsh-desktop', 'harness'))
+  // DSH Desktop 允许把数据目录搬到别处（迁移/重装后会做），活动 home 记在
+  // %APPDATA%\DSH Desktop\data-directory\state.json 的 activeHome。
+  // 不读它的话，搬家之后本脚本会静默少扫一个 —— 而那个才是真正在用的 profile ——
+  // 于是报出「未安装本插件」这种假结论。
+  try {
+    const statePath = path.join(
+      process.env.APPDATA, 'DSH Desktop', 'data-directory', 'state.json',
+    )
+    const activeHome = JSON.parse(fs.readFileSync(statePath, 'utf8'))?.activeHome
+    if (typeof activeHome === 'string' && activeHome.length > 0) {
+      homeCandidates.push(path.resolve(activeHome))
+    }
+  } catch {
+    // 没有这个文件 = 从没搬过数据目录，用上面的默认位置就够了。
+  }
 }
 
 const seen = new Set()

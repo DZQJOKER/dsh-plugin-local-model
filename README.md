@@ -8,7 +8,7 @@
 
 ## 更新日志
 
-- **0.2.3** — 发布准备：补 `repository` / `homepage` / `engines.dsh`；`peerDependencies` 从 `"*"` 改为显式的预发布分支（原来的 `*` 会静默匹配不到 harness 的 `-rc.x` 构建）；loader entry id 由裸 `local-model` 改为 `dzqjoker-local-model` 避免与其他插件撞车；去掉 `private` 与 `prepare`（产物随仓库发布，安装时不再需要构建）；补 `LICENSE`、`.gitignore`；`PLUGIN_VERSION` 与 `package.json` 对齐。
+- **0.2.3** — 发布准备：补 `repository` / `homepage` / `engines.dsh`；`peerDependencies` 从 `"*"` 改为显式的预发布分支（原来的 `*` 会静默匹配不到 harness 的 `-rc.x` 构建）；loader entry id 由裸 `local-model` 改为 `dzqjoker-local-model` 避免与其他插件撞车；去掉 `private` 与 `prepare`（产物随仓库发布，安装时不再需要构建）；补 `LICENSE`、`.gitignore`、`.gitattributes`；`PLUGIN_VERSION` 与 `package.json` 对齐。另修 `npm run verify`：它过去不读 DSH Desktop 的 `activeHome`，数据目录被搬走后会漏扫真正在用的 profile，报出「未安装本插件」的假结论。
 - **0.2.2** — 修复 CUDA OOM：新增 `gpuLayersMode`（auto / all / custom）。默认 `auto` 会下发 `-ngl auto`，让 llama.cpp 的 `--fit` 按可用显存自适应卸载 —— 之前默认把 `-ngl` 钉成 `-1` 跳过了这层保护，模型放不下时从「少放几层」变成「直接 OOM」。同时把失败日志翻译成可读诊断（fit-blocked-by-pinned-layers / cuda-oom / 形状不匹配 / 模型缺失 等十几种模式）。
 - **0.2.1** — 修复 `--flash-attn` 形状不匹配：老构建按裸 flag 发，参数解析器把下一个 token 当成它的值吃掉；新增能力探测与三态配置（auto / on / off），auto 永远不下发最安全。
 - **0.2.0** — 修复 dsh.bundle 声明形状 + 设置侧栏面板；新增浏览器半侧 bundle + 同源数据桥。

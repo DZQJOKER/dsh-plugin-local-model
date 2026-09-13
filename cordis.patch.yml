@@ -1,0 +1,31 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+#
+# 这个文件由 package.json 的 dsh.bundle.patch 指向，是「本包贡献的配置层」。
+# profile 的 dsh.profile.bundles 里列出本包时，这一层就会被应用，不需要手动 --patch。
+#
+# 注意：
+#   • name 必须是**包名**，不能用相对路径 —— 包装进 profile 的 node_modules 之后，
+#     相对路径无法解析。本地临时调试才用绝对路径 + --patch。
+#   • 只需要写想覆盖的字段，其余由插件的 schema 默认值补全。
+#   • 用户级覆盖（设置页 / settings.yaml）优先级高于这里。
+#   • id 必须全局唯一：cordis 拒绝加载含重复 entry id 的插件树，而插件市场
+#     发现新装插件的 id 与已加载的相撞时会直接把该插件卸载（否则下次启动起不来）。
+#     所以这里带上作者前缀，不用裸的 'local-model'。
+
+- insert:
+    - id: dzqjoker-local-model
+      name: 'dsh-plugin-local-model'
+      config:
+        # 选中的模型（模型目录下的相对路径）。留空 = 尚未选择，
+        # 此时首个对话会给出「请先去设置里选模型」的可操作提示。
+        selectedModel: ''
+
+        # 空闲卸载：连续多少分钟无对话交互即卸载模型、释放显存。0 = 关闭。
+        idleUnloadMinutes: 5
+
+        # 本地服务端口，dsh 侧的 llm 路由要指向它。
+        port: 18080
+
+        # 上下文长度，要与 dsh 侧路由的 contextWindow 对齐。
+        ctxSize: 8192
+

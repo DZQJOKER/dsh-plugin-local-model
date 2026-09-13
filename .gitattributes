@@ -1,0 +1,12 @@
+# 统一换行符：仓库内一律 LF。
+# 否则 Windows 上开启 core.autocrlf 后检出会把整仓换成 CRLF，产生巨大的假 diff，
+# 也会让「构建产物与源码是否一致」这种判断变得不可靠。
+* text=auto eol=lf
+
+# 二进制文件不参与转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gguf binary
+*.wasm binary

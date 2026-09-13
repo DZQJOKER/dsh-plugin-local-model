@@ -1,0 +1,10 @@
+# 依赖：不提交。构建产物（lib/、client/client.js）必须提交 —— 见 README「构建产物入库」。
+node_modules/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.log
+
+# 本地运行时数据
+examples/*.local.yaml

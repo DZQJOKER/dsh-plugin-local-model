@@ -1,0 +1,6 @@
+url: https://github.com/DZQJOKER/dsh-plugin-local-model
+name: DZQJOKER/dsh-plugin-local-model
+category: 模型与账号接入
+description:
+  en: Local model plugin: Manage local GGUF models within the settings; the llama.cpp tool is used to load the model during the first conversation, and if there is no interaction for 5 minutes, the model is automatically unloaded to free up video memory.
+  zh: 用于 DeepSeek Harness（dsh）的本地模型插件：在设置中管理本地 GGUF 模型，第一条对话自动调用 llama.cpp 加载模型，连续5分钟无交互则自动卸载并释放显存。

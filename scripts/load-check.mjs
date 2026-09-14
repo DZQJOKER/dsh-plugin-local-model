@@ -326,6 +326,54 @@ await step('设置页数据面：schema 里的说明文案被带到了字段上'
   assert.deepEqual(level.options, ['silent', 'error', 'warn', 'info', 'debug'])
 })
 
+await step('设置页数据面：新增的三个字段出现在正确的分组、类型与标签上', async () => {
+  const res = await callBridge({ path: '/api/local-model/state' })
+  const state = JSON.parse(res.body)
+  const all = state.form.groups.flatMap((g) => g.fields)
+  const groupId = (key) => state.form.groups.find((g) => g.fields.some((f) => f.key === key))?.id
+
+  const mmproj = all.find((f) => f.key === 'mmprojFile')
+  assert.ok(mmproj, '视觉投影文件必须出现在表单里（否则界面上根本没有这一项）')
+  assert.equal(mmproj.kind, 'string', '视觉投影文件是一个路径字符串')
+  assert.equal(mmproj.label, '视觉投影文件')
+  assert.equal(mmproj.default, '', '默认留空 = 沿用同目录自动关联')
+  assert.equal(groupId('mmprojFile'), 'model', '必须落在「模型与目录」分组')
+
+  const think = all.find((f) => f.key === 'enableThinking')
+  assert.ok(think, '「启用思考」必须出现在表单里')
+  assert.equal(think.kind, 'boolean', '开关必须渲染成复选框')
+  assert.equal(think.label, '启用思考')
+  assert.equal(think.default, true)
+  assert.equal(groupId('enableThinking'), 'infer', '必须落在「推理参数」分组')
+
+  const preserve = all.find((f) => f.key === 'preserveThinking')
+  assert.ok(preserve, '「保留历史 think」必须出现在表单里')
+  assert.equal(preserve.kind, 'boolean')
+  assert.equal(preserve.label, '保留历史 think')
+  assert.equal(preserve.default, true)
+  assert.equal(groupId('preserveThinking'), 'infer')
+
+  assert.ok(Array.isArray(state.visionFiles), 'state 必须带上视觉投影文件清单（下拉框的数据源）')
+})
+
+await step('设置页数据面：三个新字段能存能读，并落盘到用户层配置', async () => {
+  const res = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/config',
+    contentType: 'application/json',
+    body: { values: { mmprojFile: 'vision/mmproj-x.gguf', enableThinking: false, preserveThinking: false } },
+  })
+  assert.equal(res.statusCode, 200)
+  const state = JSON.parse(res.body)
+  assert.equal(state.config.mmprojFile, 'vision/mmproj-x.gguf')
+  assert.equal(state.config.enableThinking, false, '保存后运行时配置必须立即反映新值')
+  assert.equal(state.config.preserveThinking, false)
+
+  const onDisk = JSON.parse(fs.readFileSync(path.join(fakeHome, 'local-model', 'state', 'config.json'), 'utf8'))
+  assert.equal(onDisk.values.enableThinking, false, '开关必须真的落盘，否则重启就丢了')
+  assert.equal(onDisk.values.mmprojFile, 'vision/mmproj-x.gguf')
+})
+
 await step('设置页数据面：保存配置会落盘并即时生效', async () => {
   const res = await callBridge({
     method: 'POST',
@@ -351,6 +399,9 @@ await step('设置页数据面：恢复默认会清空用户层', async () => {
   assert.equal(res.statusCode, 200)
   const state = JSON.parse(res.body)
   assert.equal(state.config.ctxSize, 8192, '应当回到 schema 默认值')
+  assert.equal(state.config.enableThinking, true, '新增的开关也要回到默认值')
+  assert.equal(state.config.preserveThinking, true)
+  assert.equal(state.config.mmprojFile, '')
   assert.deepEqual(state.overridden, [])
 })
 

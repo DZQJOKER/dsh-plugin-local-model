@@ -80,6 +80,11 @@ const server = http.createServer(async (req, res) => {
       object: 'chat.completion',
       model,
       choices: [{ index: 0, message: { role: 'assistant', content: 'FAKE_LLAMA_OK' }, finish_reason: 'stop' }],
+      // 回显收到的关键字段：端到端测试据此确认「插件改写后的请求体真的到了上游」。
+      _echo: {
+        chat_template_kwargs: payload.chat_template_kwargs ?? null,
+        messages: payload.messages ?? null,
+      },
     })
     res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
     res.end(body)

@@ -11,7 +11,7 @@ import { fieldTypeMap } from './configStore.js'
  * 加一个字段只需要改一处，界面自动出现。
  *
  * 这里只额外补两样 schema 表达不了的东西：
- *   - 分组（纯展示：把 37 个字段分成 6 组，不然一屏铺不完）；
+ *   - 分组（纯展示：把 43 个字段分成 6 组，不然一屏铺不完）；
  *   - 校验区间（界面上的 min/max 提示）。
  */
 
@@ -49,8 +49,8 @@ const GROUP_DEFS: { id: string; title: string; hint: string; keys: (keyof LocalM
   {
     id: 'model',
     title: '模型与目录',
-    hint: '模型从哪里读、当前选中哪一个。',
-    keys: ['enabled', 'selectedModel', 'modelsDir', 'runtimeDir', 'llamaServerPath', 'preload'],
+    hint: '模型从哪里读、当前选中哪一个；需要图像输入时在这里挂上视觉投影文件。',
+    keys: ['enabled', 'selectedModel', 'mmprojFile', 'modelsDir', 'runtimeDir', 'llamaServerPath', 'preload'],
   },
   {
     id: 'server',
@@ -75,6 +75,8 @@ const GROUP_DEFS: { id: string; title: string; hint: string; keys: (keyof LocalM
       'flashAttention',
       'jinja',
       'chatTemplate',
+      'enableThinking',
+      'preserveThinking',
       'mmap',
       'mlock',
     ],
@@ -124,6 +126,7 @@ const LABELS: Partial<Record<keyof LocalModelConfig, string>> = {
   runtimeDir: '运行时目录',
   llamaServerPath: 'llama-server 路径',
   selectedModel: '当前模型',
+  mmprojFile: '视觉投影文件',
   preload: '预加载',
   host: '监听地址',
   port: '对外端口',
@@ -140,6 +143,8 @@ const LABELS: Partial<Record<keyof LocalModelConfig, string>> = {
   cacheTypeV: 'KV cache 精度（V）',
   jinja: 'Jinja 模板',
   chatTemplate: '对话模板',
+  enableThinking: '启用思考',
+  preserveThinking: '保留历史 think',
   mmap: '内存映射',
   mlock: '锁定内存',
   apiKey: '访问密钥',

@@ -172,6 +172,13 @@ export function buildState(options: WebBridgeOptions): Record<string, unknown> {
       missing: m.missing,
       hasVisionProjector: m.mmproj !== null,
     })),
+    /** 视觉投影文件下拉框的数据源：模型目录里扫到的全部 mmproj。 */
+    visionFiles: runtime.listVisionProjectors().map((p) => ({
+      id: p.rel,
+      sizeBytes: p.size,
+      sizeText: formatBytes(p.size),
+      absolute: p.abs,
+    })),
     runtime: {
       state: status.state,
       stateLabel: status.stateLabel,
@@ -190,6 +197,7 @@ export function buildState(options: WebBridgeOptions): Record<string, unknown> {
       restarts: status.restarts,
       lastError: status.lastError,
       modelsFound: status.modelsFound,
+      visionProjector: status.visionProjector,
     },
   }
 }

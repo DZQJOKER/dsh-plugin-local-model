@@ -8,6 +8,7 @@
 
 ## 更新日志
 
+- **0.3.0** — 两项推理侧能力：① 推理参数新增「启用思考」「保留历史 think」两个开关，按 `chat_template_kwargs`（`enable_thinking` / `preserve_thinking`）在**每次请求**的请求体上下发，关闭「保留历史 think」时还会顺手剥掉历史 assistant 消息里的 `reasoning_content` / think 文本，让多轮上下文中不再堆积思考内容；② 模型与目录新增「视觉投影文件」选择项，可直接挑选 mmproj（加载时作为 `--mmproj` 下发），**留空即保持原有的「同目录自动关联」行为**。这两项开关走请求体而不是 llama-server 启动参数：旧构建只会忽略它，绝不会影响模型加载，也不必为切一次开关重启模型。
 - **0.2.3** — 发布准备：补 `repository` / `homepage` / `engines.dsh`；`peerDependencies` 从 `"*"` 改为显式的预发布分支（原来的 `*` 会静默匹配不到 harness 的 `-rc.x` 构建）；loader entry id 由裸 `local-model` 改为 `dzqjoker-local-model` 避免与其他插件撞车；去掉 `private` 与 `prepare`（产物随仓库发布，安装时不再需要构建）；补 `LICENSE`、`.gitignore`、`.gitattributes`；`PLUGIN_VERSION` 与 `package.json` 对齐。另修 `npm run verify`：它过去不读 DSH Desktop 的 `activeHome`，数据目录被搬走后会漏扫真正在用的 profile，报出「未安装本插件」的假结论。
 - **0.2.2** — 修复 CUDA OOM：新增 `gpuLayersMode`（auto / all / custom）。默认 `auto` 会下发 `-ngl auto`，让 llama.cpp 的 `--fit` 按可用显存自适应卸载 —— 之前默认把 `-ngl` 钉成 `-1` 跳过了这层保护，模型放不下时从「少放几层」变成「直接 OOM」。同时把失败日志翻译成可读诊断（fit-blocked-by-pinned-layers / cuda-oom / 形状不匹配 / 模型缺失 等十几种模式）。
 - **0.2.1** — 修复 `--flash-attn` 形状不匹配：老构建按裸 flag 发，参数解析器把下一个 token 当成它的值吃掉；新增能力探测与三态配置（auto / on / off），auto 永远不下发最安全。
@@ -126,7 +127,8 @@ node scripts/fetch-llama.mjs --dry-run       # 只预览要下载哪个包
 
 - 单文件：`Qwen3-8B-Q4_K_M.gguf`
 - 分片：`xxx-00001-of-00003.gguf` ×3 —— 会自动归并成一个模型，**缺片会明确提示而不是加载半截模型**
-- 视觉：同目录放 `mmproj-*.gguf` —— 只在能确定归属时自动关联（宁可漏配，不可错配）
+- 视觉：同目录放 `mmproj-*.gguf` —— 只在能确定归属时自动关联（宁可漏配，不可错配）；
+  目录里有多个模型/多个投影文件而自动关联不出来时，去 **设置 → 本地模型 → 视觉投影文件** 手动选一个即可。
 
 放好后回 **设置 → 本地模型** 点「重新扫描」，在下拉框里选模型。
 
@@ -148,8 +150,9 @@ node scripts/fetch-llama.mjs --dry-run       # 只预览要下载哪个包
 - **底部**：保存 / 放弃修改 / 恢复默认；未保存项数会实时标出。
 
 面板是**数据驱动**的：字段列表、类型、默认值、说明全部由宿主把 schema 序列化后送过来
-（`Config.toJSON()` → `src/schemaForm.ts`），因此往 `config.ts` 加一个字段，界面上会自动出现，
-客户端一行都不用改。
+（`Config.toJSON()` → `src/schemaForm.ts`），因此往 `config.ts` 加一个字段，界面上会自动出现。
+两个例外是**需要下拉框**的字段（`selectedModel` 选模型、`mmprojFile` 选视觉投影文件）——
+选项来自扫描结果、schema 表达不了，所以由客户端特判渲染，其余字段一律自动出现。
 
 ### 设置的三个层级
 
@@ -184,9 +187,9 @@ schema 默认值  →  组合层（cordis.patch.yml / 部署配置）  →  <DSH
 
 | 分组 | 关键字段 |
 | --- | --- |
-| 模型与目录 | `enabled`、`selectedModel`、`modelsDir`、`runtimeDir`、`llamaServerPath`、`preload` |
+| 模型与目录 | `enabled`、`selectedModel`、`mmprojFile`（视觉投影文件）、`modelsDir`、`runtimeDir`、`llamaServerPath`、`preload` |
 | 服务与端口 | `host`（默认只听回环）、`port`（默认 18080）、`llamaPort`（默认 0 = 每次自动挑空闲端口） |
-| 推理参数 | `ctxSize`、`gpuLayers`、`threads`、`batchSize`/`ubatchSize`、`flashAttention`、`jinja`、`chatTemplate`、`mmap`、`mlock` |
+| 推理参数 | `ctxSize`、`gpuLayers`、`threads`、`batchSize`/`ubatchSize`、`flashAttention`、`jinja`、`chatTemplate`、**`enableThinking`（启用思考）**、**`preserveThinking`（保留历史 think）**、`mmap`、`mlock` |
 | 加载与卸载 | **`idleUnloadMinutes`（默认 5）**、`startupTimeoutMs`、`shutdownGraceMs`、`autoRestart`、`maxRestarts` |
 | 接入 dsh | `routeName`、`modelAlias`（固定 `local`）、`routeModelId`、`contextWindow`、`maxTokens`、`registerRoute`、`exposeTool`、`allowModelControl` |
 | 诊断与高级 | `apiKey`、`extraArgs`、`envOverrides`、`logLevel`（排查加载问题设 `debug`） |
@@ -263,6 +266,25 @@ llm-pi-ai:
 
 对 dsh 来说端点始终在线；对用户来说显存只在真正用的时候才被占。
 
+**代理会改一种请求体：对话补全**
+
+「原样转发」有一个例外 —— `POST /v1/chat/completions` 的请求体会按两个思考开关改写：
+
+```
+请求体 ──▶ 合并 chat_template_kwargs（enable_thinking / preserve_thinking）
+        └─▶ 关闭「保留历史 think」时：剥掉历史 assistant 消息的 reasoning_content 与 think 文本
+```
+
+为什么改在请求体而不是 llama-server 启动参数（`--chat-template-kwargs`）：
+
+1. 启动参数在旧构建上根本不存在，一旦下发就是「模型起不来」；请求体里多一个字段，
+   旧构建的 JSON 解析器直接忽略，**最坏也只是开关无效**，模型加载这条主线绝不受影响；
+2. 这两个开关是「每次请求」的语义，改完即生效，不必为切一次开关重启模型；
+3. 「不保留历史 think」要动的是 `messages` 本身，启动参数表达不了。
+
+其余路径（`/v1/models`、`/health`、`/v1/embeddings`…）连请求体都不读，仍是零改动的流式直通；
+认不出的请求体（非 JSON、非对象）一律原样放行 —— 一个可以降级的设置问题，不该变成一次请求失败。
+
 **状态机**
 
 ```
@@ -305,6 +327,8 @@ disabled ──启用──▶ idle ──首条对话──▶ starting ──�
 | 一直卡在「正在加载模型…」 | 看插件日志里 llama-server 的输出（`logLevel=debug`）；多半是显存不足或 `-ngl` 太大 |
 | 加载失败，日志里出现 `n_gpu_layers already set by user to N, abort` + `cudaMalloc failed: out of memory` | **OOM + 自适应被钉住**：把「设置 → 本地模型 → GPU 层数策略」改成「自动」（这是 0.2.2+ 的默认）。`--fit` 只会调整「用户没显式设置」的参数；一旦把 `-ngl` 钉成具体数字，自适应就被跳过，模型放不下时从「少放几层」变成「直接 OOM」。同时把上下文长度调小、换更低比特量化 |
 | 模型看不到工具、不调用工具 | 检查 `jinja=true`；再试 `chatTemplate=chatml` 或指定模板文件 |
+| 切了「启用思考 / 保留历史 think」但输出没变化 | 两条前提：① llama.cpp 要支持请求体里的 `chat_template_kwargs`（2025-06 之后的构建，旧构建会忽略该字段，表现为开关无效）；② 模型模板要认 `enable_thinking` / `preserve_thinking`（带思维链的模板如 Qwen3 / Qwen3.6 才认）。`logLevel=debug` 会把「未能改写请求体」的原因打出来 |
+| 加载失败，日志里出现 `failed to load mmproj` / `clip_model_load` | 视觉投影文件与模型不配套，或路径不对。去 **设置 → 本地模型 → 视觉投影文件**，把选项恢复成「自动」让插件重新按同目录关联；纯文本模型保持「自动」即可 |
 | 长会话中途崩 | `contextWindow` 比 `ctxSize` 大；把两者对齐并留余量 |
 | 回复一卡一卡然后断开 | 设置页或路由里的 `streamIdleTimeoutMs` 太短（本地推理慢），参考第 5 节调到 600000 |
 | 显存没释放 | 看 `local_model` 工具或 `/local-model status` 的状态；确认 `idleUnloadMinutes` 不是 0 |
@@ -373,21 +397,22 @@ package.json         dsh.bundle.patch → cordis.patch.yml；dsh.client → clie
 cordis.patch.yml     bundle patch：把插件行 insert 进 profile 的插件树
 src/                 宿主侧（Node）
 ├── index.ts          插件入口：name / inject / Config / apply（只用具名导出）
-├── config.ts         设置项的唯一真源（schemastery schema，37 个字段）
+├── config.ts         设置项的唯一真源（schemastery schema，43 个字段）
 ├── configResolve.ts  配置解析：路径占位符、区间收敛（无宿主依赖，可单独测）
 ├── configStore.ts    用户层配置读写 + 写入白名单/类型闸门
 ├── paths.ts          $DSH_HOME 与目录约定、首次初始化
 ├── schemaForm.ts     把 schema 序列化成设置面板的表单描述（含分组）
 ├── webBridge.ts      同源 HTTP 数据面（状态 / 配置 / 操作），回环 + JSON 约束
-├── registry.ts       模型扫描：GGUF 分片归并、量化/参数量识别、mmproj 关联
+├── registry.ts       模型扫描：GGUF 分片归并、量化/参数量识别、mmproj 关联与选择
+├── requestRewrite.ts 请求体改写：思考开关（chat_template_kwargs + 历史 think 剥离）
 ├── lifecycle.ts      状态机：单飞加载、空闲卸载、崩溃自愈、热改配置
-├── proxy.ts          常驻入口：首请求触发加载、SSE 透传、状态端点
+├── proxy.ts          常驻入口：首请求触发加载、SSE 透传、状态端点、按开关改写请求体
 ├── llmBridge.ts      接入 dsh llm 缝（探测 + 降级）
 ├── tools.ts          local_model 工具（status / list / start / stop）
 └── commands.ts       /local-model 命令（status / list / start / stop / reload / route）
 client/src/          浏览器半侧
 ├── index.jsx         注册 settings.section 一级页面 + 词条
-├── section.jsx       面板：状态、模型下拉、按 schema 渲染的分组表单
+├── section.jsx       面板：状态、模型/视觉投影下拉、按 schema 渲染的分组表单
 ├── api.js            同源 fetch
 └── styles.js         内联样式（不引 CSS modules，少一个加载失败面）
 scripts/

@@ -29,7 +29,7 @@ import { registerLocalModelCommands } from './commands.js'
 export const name = 'local-model'
 
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export const PLUGIN_VERSION = '0.2.3'
+export const PLUGIN_VERSION = '0.3.0'
 
 /**
  * 硬依赖：无。
@@ -73,6 +73,11 @@ export function apply(ctx: Context, config?: Partial<LocalModelConfig>): void {
     modelId: () => runtime.config.routeModelId,
     modelDisplayName: () => runtime.status().model?.displayName ?? runtime.config.routeModelId,
     apiKey: () => runtime.config.apiKey,
+    // 两个思考开关按「每次请求」生效：设置在会话中改了立刻跟上，不必重启模型。
+    thinkPolicy: () => ({
+      enableThinking: runtime.config.enableThinking,
+      preserveThinking: runtime.config.preserveThinking,
+    }),
     log,
   })
   runtime.attachProxy(proxy)

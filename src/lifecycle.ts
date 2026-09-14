@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 
 import type { Log } from './log.js'
 import type { ResolvedConfig } from './configResolve.js'
-import { scanModels, pickModel, formatBytes, type LocalModelEntry } from './registry.js'
+import { scanModelsDetailed, pickModel, formatBytes, resolveVisionProjector, type LocalModelEntry, type ModelShard } from './registry.js'
 import { ensureReadme } from './paths.js'
 import { buildLlamaServerArgs, DEFAULT_ALIAS } from './llama/args.js'
 import { describeSearchScope, locateLlamaServer } from './llama/detect.js'
@@ -62,6 +62,8 @@ export interface RuntimeStatus {
   modelsFound: number
   modelsDir: string
   runtimeDir: string
+  /** 本次加载会下发给 llama-server 的 --mmproj（绝对路径）；无视觉能力时为 null。 */
+  visionProjector: string | null
 }
 
 /** 插件向生命周期层注入的代理句柄，避免 lifecycle 直接依赖 http 实现。 */
@@ -163,7 +165,8 @@ export function defaultServerLauncher(input: LaunchInput): LlamaServerLike {
     cacheTypeV: config.cacheTypeV,
     jinja: config.jinja,
     chatTemplate: config.chatTemplate,
-    mmproj: entry.mmproj ?? '',
+    // 显式选择的 mmproj 优先；留空时仍是模型同目录自动关联的结果（原有行为不变）。
+    mmproj: resolveVisionProjector(config.modelsDir, config.mmprojFile, entry.mmproj),
     mmap: config.mmap,
     mlock: config.mlock,
     apiKey: config.apiKey,
@@ -202,6 +205,7 @@ export class LocalModelRuntime {
   private restartTimer: NodeJS.Timeout | null = null
 
   private models: LocalModelEntry[] = []
+  private visionProjectors: ModelShard[] = []
   private modelsScannedAt = 0
   private selectedOverride: string | null = null
 
@@ -400,10 +404,13 @@ export class LocalModelRuntime {
     const now = Date.now()
     if (!force && now - this.modelsScannedAt < SCAN_TTL_MS) return this.models
     try {
-      this.models = await scanModels(this.config.modelsDir)
+      const scanned = await scanModelsDetailed(this.config.modelsDir)
+      this.models = scanned.entries
+      this.visionProjectors = scanned.visionProjectors
     } catch (error) {
       this.log.error(`扫描模型目录失败：${(error as Error).message}`)
       this.models = []
+      this.visionProjectors = []
     }
     this.modelsScannedAt = now
     this.emit()
@@ -412,6 +419,21 @@ export class LocalModelRuntime {
 
   listModels(): LocalModelEntry[] {
     return this.models
+  }
+
+  /** 模型目录里扫到的全部视觉投影文件（供设置页的下拉框）。 */
+  listVisionProjectors(): ModelShard[] {
+    return this.visionProjectors
+  }
+
+  /**
+   * 本次加载实际会下发的 --mmproj（绝对路径）；没有视觉能力时为 null。
+   * 取值规则与拼参数时完全一致 —— 界面显示的和真正下发的不该是两回事。
+   */
+  effectiveVisionProjector(entry: LocalModelEntry | null = pickModel(this.models, this.selectedModelId)): string | null {
+    if (!entry) return null
+    const resolved = resolveVisionProjector(this.config.modelsDir, this.config.mmprojFile, entry.mmproj)
+    return resolved.length > 0 ? resolved : null
   }
 
   /** 会话内切换模型：能找到持久化钩子就落盘，否则只在本进程生效。 */
@@ -500,6 +522,7 @@ export class LocalModelRuntime {
       modelsFound: this.models.length,
       modelsDir: this.config.modelsDir,
       runtimeDir: this.config.runtimeDir,
+      visionProjector: this.effectiveVisionProjector(entry),
     }
   }
 
@@ -539,6 +562,7 @@ export class LocalModelRuntime {
     )
     lines.push(`入口：${status.endpoint}`)
     if (status.upstream) lines.push(`上游：${status.upstream}${status.pid ? `（pid ${status.pid}）` : ''}`)
+    if (status.visionProjector) lines.push(`视觉投影：${status.visionProjector}`)
     if (status.state === 'ready') {
       lines.push(
         this.config.idleUnloadMinutes > 0
@@ -621,7 +645,7 @@ export class LocalModelRuntime {
           cacheTypeV: this.config.cacheTypeV,
           jinja: this.config.jinja,
           chatTemplate: this.config.chatTemplate,
-          mmproj: entry.mmproj ?? '',
+          mmproj: resolveVisionProjector(this.config.modelsDir, this.config.mmprojFile, entry.mmproj),
           mmap: this.config.mmap,
           mlock: this.config.mlock,
           apiKey: this.config.apiKey,

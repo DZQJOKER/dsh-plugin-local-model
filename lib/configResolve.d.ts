@@ -16,6 +16,13 @@ export interface ResolvedConfig extends LocalModelConfig {
  */
 export declare function defaultConfig(): LocalModelConfig;
 export declare function clamp(value: number, min: number, max: number, fallback: number): number;
+/**
+ * 布尔收敛：只有明确的「假」才判为关闭，其余无法识别的值一律回落到 fallback。
+ *
+ * 为什么需要它：组合层（cordis.patch.yml / 手写 JS 配置）不经过 Web 侧的写入闸门，
+ * 一个字符串 `"false"` 直接用 `!== false` 判断会变成「开启」—— 开关方向反了是最难查的一类 bug。
+ */
+export declare function normalizeBool(value: unknown, fallback: boolean): boolean;
 export declare function logLevelOf(value: string | undefined): LogLevel;
 export declare function isAutoUnloadDisabled(minutes: number): boolean;
 /**

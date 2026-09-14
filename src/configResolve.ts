@@ -24,6 +24,7 @@ export function defaultConfig(): LocalModelConfig {
     runtimeDir: '',
     llamaServerPath: '',
     selectedModel: '',
+    mmprojFile: '',
     preload: false,
     host: '127.0.0.1',
     port: 18080,
@@ -40,6 +41,8 @@ export function defaultConfig(): LocalModelConfig {
     cacheTypeV: 'q8_0',
     jinja: true,
     chatTemplate: '',
+    enableThinking: true,
+    preserveThinking: true,
     mmap: true,
     mlock: false,
     apiKey: '',
@@ -67,6 +70,19 @@ export function clamp(value: number, min: number, max: number, fallback: number)
   return Math.min(max, Math.max(min, Math.round(n)))
 }
 
+/**
+ * 布尔收敛：只有明确的「假」才判为关闭，其余无法识别的值一律回落到 fallback。
+ *
+ * 为什么需要它：组合层（cordis.patch.yml / 手写 JS 配置）不经过 Web 侧的写入闸门，
+ * 一个字符串 `"false"` 直接用 `!== false` 判断会变成「开启」—— 开关方向反了是最难查的一类 bug。
+ */
+export function normalizeBool(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value
+  if (value === 1 || value === '1' || value === 'true' || value === 'yes') return true
+  if (value === 0 || value === '0' || value === 'false' || value === 'no') return false
+  return fallback
+}
+
 export function logLevelOf(value: string | undefined): LogLevel {
   return value === 'silent' || value === 'error' || value === 'warn' || value === 'debug' ? value : 'info'
 }
@@ -91,6 +107,10 @@ export function resolveConfig(input: Partial<LocalModelConfig> | undefined, env:
     ...merged,
     modelsDir: paths.modelsDir,
     runtimeDir: paths.runtimeDir,
+    // 视觉投影：这里只做 trim，真正的优先级（显式选择 → 自动关联）在 registry.resolveVisionProjector。
+    mmprojFile: (merged.mmprojFile ?? '').trim(),
+    enableThinking: normalizeBool(merged.enableThinking, defaults.enableThinking),
+    preserveThinking: normalizeBool(merged.preserveThinking, defaults.preserveThinking),
     host: (merged.host || defaults.host).trim(),
     port: clamp(merged.port, 1, 65535, defaults.port),
     llamaPort: clamp(merged.llamaPort, 0, 65535, defaults.llamaPort),

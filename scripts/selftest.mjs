@@ -22,9 +22,11 @@ import {
   parseHelp,
   unknownFlags,
 } from '../lib/llama/capabilities.js'
-import { groupShards, parseQuant, parseParams, pickModel, formatBytes, scanModels } from '../lib/registry.js'
+import { groupShards, parseQuant, parseParams, pickModel, formatBytes, scanModels, scanModelsDetailed, resolveVisionProjector } from '../lib/registry.js'
 import { resolveDir, expandVars } from '../lib/paths.js'
-import { resolveConfig, clamp, logLevelOf } from '../lib/configResolve.js'
+import { resolveConfig, clamp, logLevelOf, normalizeBool } from '../lib/configResolve.js'
+import { sanitize } from '../lib/configStore.js'
+import { isChatCompletionPath, rewriteChatRequestBody, thinkChatTemplateKwargs } from '../lib/requestRewrite.js'
 import { diagnoseLoadFailure, extractEffectiveContext } from '../lib/llama/diagnose.js'
 import { shouldUnload } from '../lib/lifecycle.js'
 
@@ -619,6 +621,152 @@ await testAsync('真实目录扫描（含子目录、分片、mmproj）', async 
   }
 })
 
+// ── 视觉投影文件（新增的手动选择项） ────────────────────────────────────────
+section('视觉投影文件（mmproj）选择')
+
+test('留空 = 沿用同目录自动关联的结果（原有行为一字不变）', () => {
+  assert.equal(resolveVisionProjector('/m', '', '/m/mmproj-a.gguf'), '/m/mmproj-a.gguf')
+  assert.equal(resolveVisionProjector('/m', '   ', '/m/mmproj-a.gguf'), '/m/mmproj-a.gguf', '纯空白等于留空')
+  assert.equal(resolveVisionProjector('/m', '', null), '', '原本就没关联到 mmproj 时依旧不下发 --mmproj')
+})
+
+test('显式选择优先，相对路径按模型目录解析', () => {
+  const modelsDir = path.resolve(path.sep, 'base')
+  const resolved = resolveVisionProjector(modelsDir, 'vision/mmproj-b.gguf', path.join(modelsDir, 'mmproj-a.gguf'))
+  assert.ok(path.isAbsolute(resolved), '最终必须是绝对路径（llama-server 的 cwd 不是模型目录）')
+  assert.equal(resolved, path.resolve(modelsDir, 'vision/mmproj-b.gguf'))
+  assert.ok(resolved !== path.join(modelsDir, 'mmproj-a.gguf'), '显式选择必须覆盖自动关联')
+})
+
+test('允许填绝对路径（兼容历史上手写 --mmproj 的做法）', () => {
+  const absolute = path.resolve(path.sep, 'elsewhere', 'mmproj-c.gguf')
+  assert.equal(resolveVisionProjector(path.resolve(path.sep, 'base'), absolute, null), absolute)
+})
+
+await testAsync('扫描结果同时给出模型列表与 mmproj 清单（供设置页下拉）', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'local-model-vision-'))
+  try {
+    await mkdir(path.join(dir, 'vision'), { recursive: true })
+    await writeFile(path.join(dir, 'vision', 'VLM-Q8_0.gguf'), 'x')
+    await writeFile(path.join(dir, 'vision', 'mmproj-VLM-f16.gguf'), 'x')
+
+    const scanned = await scanModelsDetailed(dir)
+    assert.deepEqual(
+      scanned.visionProjectors.map((p) => p.rel),
+      ['vision/mmproj-VLM-f16.gguf'],
+      'mmproj 必须能被单独列出来，否则设置页的下拉框是空的',
+    )
+    assert.equal(scanned.entries.length, 1, 'mmproj 不应被当成模型')
+    assert.deepEqual(await scanModels(dir), scanned.entries, 'scanModels 保持原有签名与结果')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ── 思考开关（请求体改写） ──────────────────────────────────────────────────
+section('思考开关（请求体改写）')
+
+const policy = (enableThinking, preserveThinking) => ({ enableThinking, preserveThinking })
+
+test('两个开关都显式下发（只下发 false 会让「打开」这一侧失效）', () => {
+  assert.deepEqual(thinkChatTemplateKwargs(policy(true, true)), { enable_thinking: true, preserve_thinking: true })
+  assert.deepEqual(thinkChatTemplateKwargs(policy(false, false)), { enable_thinking: false, preserve_thinking: false })
+  assert.deepEqual(thinkChatTemplateKwargs(policy(false, true)), { enable_thinking: false, preserve_thinking: true })
+})
+
+test('只认对话补全路径（其它请求一律不改写）', () => {
+  assert.equal(isChatCompletionPath('/v1/chat/completions'), true)
+  assert.equal(isChatCompletionPath('/chat/completions'), true)
+  assert.equal(isChatCompletionPath('/v1/chat/completions/'), true, '带尾斜杠也要认')
+  assert.equal(isChatCompletionPath('/v1/completions'), false)
+  assert.equal(isChatCompletionPath('/v1/models'), false)
+  assert.equal(isChatCompletionPath('/health'), false)
+  assert.equal(isChatCompletionPath('/v1/embeddings'), false)
+})
+
+test('改写：注入 chat_template_kwargs，且不抹掉用户自己的模板变量', () => {
+  const raw = JSON.stringify({
+    model: 'local',
+    messages: [{ role: 'user', content: 'hi' }],
+    chat_template_kwargs: { custom_flag: true },
+  })
+  const out = rewriteChatRequestBody(raw, policy(false, true))
+  assert.equal(out.changed, true)
+  const body = JSON.parse(out.body.toString('utf8'))
+  assert.equal(body.chat_template_kwargs.enable_thinking, false)
+  assert.equal(body.chat_template_kwargs.preserve_thinking, true)
+  assert.equal(body.chat_template_kwargs.custom_flag, true, '用户自己填的模板变量必须保留')
+  assert.equal(body.model, 'local', '其它字段不受影响')
+  assert.deepEqual(body.messages, [{ role: 'user', content: 'hi' }], '保留历史 think 时不该动 messages')
+})
+
+test('改写：值已经一致时完全不碰请求体', () => {
+  const raw = JSON.stringify({ messages: [], chat_template_kwargs: { enable_thinking: true, preserve_thinking: true } })
+  const out = rewriteChatRequestBody(raw, policy(true, true))
+  assert.equal(out.changed, false, '值没变就不该改写')
+  assert.equal(out.body.toString('utf8'), raw)
+  assert.equal(out.notice, null)
+})
+
+test('关闭「保留历史 think」：剥掉 reasoning 字段与正文里的 think 块', () => {
+  const raw = JSON.stringify({
+    messages: [
+      { role: 'user', content: '<think>提问里的这串是内容，不是思考</think>请解释一下' },
+      { role: 'assistant', content: '', reasoning_content: '内部推理', thinking: '另一份推理' },
+      { role: 'assistant', content: '<think>先算 1+1</think>答案是 2' },
+      { role: 'assistant', content: '普通回答', tool_calls: [{ id: 'call-1' }] },
+    ],
+  })
+  const out = rewriteChatRequestBody(raw, policy(true, false))
+  assert.equal(out.changed, true)
+  const [user, bare, thinkOnly, plain] = JSON.parse(out.body.toString('utf8')).messages
+
+  assert.match(user.content, /提问里的这串是内容/, '用户消息里的 think 是正文，不能剥')
+  assert.equal(bare.reasoning_content, undefined, 'reasoning_content 必须剥掉')
+  assert.equal(bare.thinking, undefined, 'thinking 字段同样要剥掉')
+  assert.equal(thinkOnly.content, '答案是 2', '正文里的 think 块要剥掉，并清掉留下的前导空白')
+  assert.equal(plain.content, '普通回答', '没有 think 的消息一字不改')
+  assert.deepEqual(plain.tool_calls, [{ id: 'call-1' }], '工具调用必须原样保留')
+})
+
+test('关闭「保留历史 think」：多模态 parts 只处理文本段', () => {
+  const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }
+  const raw = JSON.stringify({
+    messages: [{ role: 'assistant', content: [{ type: 'text', text: '<think>t</think>结论' }, image] }],
+  })
+  const body = JSON.parse(rewriteChatRequestBody(raw, policy(true, false)).body.toString('utf8'))
+  assert.equal(body.messages[0].content[0].text, '结论')
+  assert.deepEqual(body.messages[0].content[1], image, '图片段必须原样保留')
+})
+
+test('关闭「保留历史 think」但历史里本来没有 think：内容一字不改', () => {
+  const raw = JSON.stringify({ messages: [{ role: 'assistant', content: '  前后都有空白  ' }] })
+  const body = JSON.parse(rewriteChatRequestBody(raw, policy(true, false)).body.toString('utf8'))
+  assert.equal(body.messages[0].content, '  前后都有空白  ', '没命中 think 块就不该顺手改空白')
+})
+
+test('开启「保留历史 think」：历史 think 原样留在上下文里', () => {
+  const raw = JSON.stringify({ messages: [{ role: 'assistant', content: '<think>保留我</think>答案' }] })
+  const body = JSON.parse(rewriteChatRequestBody(raw, policy(true, true)).body.toString('utf8'))
+  assert.equal(body.messages[0].content, '<think>保留我</think>答案')
+})
+
+test('认不出的请求体一律原样放行（绝不因为开关丢掉请求）', () => {
+  for (const raw of ['', '   ', 'not json at all', '[1,2,3]', '"just a string"', '42']) {
+    const out = rewriteChatRequestBody(raw, policy(false, false))
+    assert.equal(out.changed, false, `不该改写：${raw}`)
+    assert.equal(out.body.toString('utf8'), raw, `必须原样返回：${raw}`)
+    assert.ok(out.notice, `必须给出说明：${raw}`)
+  }
+})
+
+test('Buffer 与字符串两种入参等价（代理层拿到的是 Buffer）', () => {
+  const raw = JSON.stringify({ messages: [] })
+  const fromString = rewriteChatRequestBody(raw, policy(true, true))
+  const fromBuffer = rewriteChatRequestBody(Buffer.from(raw, 'utf8'), policy(true, true))
+  assert.equal(fromString.body.toString('utf8'), fromBuffer.body.toString('utf8'))
+})
+
 // ── 配置解析 ────────────────────────────────────────────────────────────────
 section('配置解析')
 
@@ -673,6 +821,35 @@ test('非法数值被收敛，不会把矛盾参数丢给子进程', () => {
 test('空闲卸载 0 分钟表示关闭（而不是「立即卸载」）', () => {
   const resolved = resolveConfig({ idleUnloadMinutes: 0 }, { DSH_HOME: '/tmp/dsh' })
   assert.equal(resolved.idleUnloadMs, 0)
+})
+
+test('新增配置项的默认值：思考开、保留历史 think、mmproj 留空', () => {
+  const resolved = resolveConfig(undefined, { DSH_HOME: '/tmp/dsh' })
+  assert.equal(resolved.enableThinking, true)
+  assert.equal(resolved.preserveThinking, true)
+  assert.equal(resolved.mmprojFile, '', '留空 = 沿用同目录自动关联，保持原有行为')
+})
+
+test('开关值的字符串形态被正确收敛（组合层不经过 Web 写入闸门）', () => {
+  const resolved = resolveConfig(
+    { enableThinking: 'false', preserveThinking: '0', mmprojFile: '  vision/mmproj.gguf  ' },
+    { DSH_HOME: '/tmp/dsh' },
+  )
+  assert.equal(resolved.enableThinking, false, '字符串 "false" 必须被认成关闭，而不是「非 false 即开启」')
+  assert.equal(resolved.preserveThinking, false)
+  assert.equal(resolved.mmprojFile, 'vision/mmproj.gguf', '路径要去掉两端空白')
+
+  assert.equal(normalizeBool(true, false), true)
+  assert.equal(normalizeBool('yes', false), true)
+  assert.equal(normalizeBool(undefined, true), true, '认不出的值回落到默认值')
+  assert.equal(normalizeBool('随便什么', true), true)
+  assert.equal(normalizeBool('随便什么', false), false)
+})
+
+test('写入闸门认得这三个新字段，且仍然丢弃未知键', () => {
+  const clean = sanitize({ mmprojFile: 'a.gguf', enableThinking: 'false', preserveThinking: 1, 不存在的字段: 'x' })
+  assert.deepEqual(clean, { mmprojFile: 'a.gguf', enableThinking: false, preserveThinking: true })
+  assert.deepEqual(sanitize({ enableThinking: null }), {}, 'null 视为未设置，不落盘')
 })
 
 // ── 空闲卸载判定（防止 SSE 长连接挂死导致模型永不释放） ─────────────────

@@ -1,4 +1,5 @@
 import type { Log } from './log.js';
+import { type ThinkPolicy } from './requestRewrite.js';
 export interface ProxyOptions {
     host: string;
     port: number;
@@ -16,6 +17,11 @@ export interface ProxyOptions {
     modelId: () => string;
     modelDisplayName: () => string;
     apiKey: () => string;
+    /**
+     * 本次请求要用的思考开关策略。返回 null（或压根不提供）= 完全不动请求体、原样直通。
+     * 做成回调而不是启动快照：设置随时可能被改，代理必须按最新值走。
+     */
+    thinkPolicy?: () => ThinkPolicy | null;
     log: Log;
 }
 /**

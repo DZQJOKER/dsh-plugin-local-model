@@ -139,6 +139,8 @@ async function buildRuntime(overrides = {}) {
     modelId: () => config.routeModelId,
     modelDisplayName: () => runtime.status().model?.displayName ?? config.routeModelId,
     apiKey: () => config.apiKey,
+    // 生产里由 index.ts 注入；这里按配置取，才能验证「改写后的请求体真的到了上游」。
+    thinkPolicy: () => ({ enableThinking: config.enableThinking, preserveThinking: config.preserveThinking }),
     log,
   })
   runtime.attachProxy(proxy)
@@ -238,8 +240,56 @@ await step('流式返回逐块透传（SSE 不被缓冲）', async () => {
   }
 })
 
-await step('空闲一段时间后：自动卸载、进程被回收、端口被释放', async () => {
+await step('思考开关：默认开启时显式下发 true，其它字段不受影响', async () => {
   const ctx = await buildRuntime()
+  try {
+    await ctx.runtime.init()
+    const res = await request(`${ctx.proxy.origin}/v1/chat/completions`, {
+      method: 'POST',
+      body: { model: 'local', messages: [{ role: 'user', content: 'hi' }] },
+    })
+    assert.equal(res.status, 200)
+    const payload = JSON.parse(res.text)
+    assert.deepEqual(
+      payload._echo.chat_template_kwargs,
+      { enable_thinking: true, preserve_thinking: true },
+      '上游必须收到改写后的 chat_template_kwargs',
+    )
+    assert.deepEqual(payload._echo.messages, [{ role: 'user', content: 'hi' }], '保留历史 think 时 messages 原样转发')
+    assert.equal(payload.choices[0].message.content, 'FAKE_LLAMA_OK', '改写不能破坏响应透传')
+  } finally {
+    await teardown(ctx)
+  }
+})
+
+await step('思考开关：关闭时下发 false，并剥掉历史 think 后再发给上游', async () => {
+  const ctx = await buildRuntime({ enableThinking: false, preserveThinking: false })
+  try {
+    await ctx.runtime.init()
+    const res = await request(`${ctx.proxy.origin}/v1/chat/completions`, {
+      method: 'POST',
+      body: {
+        model: 'local',
+        messages: [
+          { role: 'assistant', content: '<think>想了一大堆</think>答案是 2', reasoning_content: '内部推理' },
+          { role: 'user', content: '那 3 呢' },
+        ],
+      },
+    })
+    assert.equal(res.status, 200)
+    const payload = JSON.parse(res.text)
+    assert.deepEqual(payload._echo.chat_template_kwargs, { enable_thinking: false, preserve_thinking: false })
+    assert.deepEqual(
+      payload._echo.messages,
+      [{ role: 'assistant', content: '答案是 2' }, { role: 'user', content: '那 3 呢' }],
+      '历史 think 必须在上游看到之前就被剥掉',
+    )
+  } finally {
+    await teardown(ctx)
+  }
+})
+
+await step('空闲一段时间后：自动卸载、进程被回收、端口被释放', async () => {  const ctx = await buildRuntime()
   try {
     await ctx.runtime.init()
     await request(`${ctx.proxy.origin}/v1/chat/completions`, {

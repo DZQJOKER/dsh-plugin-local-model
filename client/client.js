@@ -349,6 +349,10 @@ window.__ModuleLoader__.load({
 		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.metaLabel, children: "模型总数：" }),
 		          state.runtime.modelsFound
 		        ] }),
+		        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.metaLabel, children: "视觉投影：" }),
+		          state.runtime.visionProjector ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.mono, children: state.runtime.visionProjector }) : "未启用（纯文本）"
+		        ] }),
 		        isReady && state.runtime.unloadAt ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
 		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.metaLabel, children: "自动卸载：" }),
 		          new Date(state.runtime.unloadAt).toLocaleTimeString()
@@ -398,6 +402,7 @@ window.__ModuleLoader__.load({
 		          field,
 		          value: valueOf(field.key),
 		          models: state.models,
+		          visionFiles: state.visionFiles ?? [],
 		          overridden: overridden.has(field.key) && !unset.includes(field.key) && !(field.key in draft),
 		          invalid: invalid.includes(field.key),
 		          onChange: (raw) => setValue(field, raw),
@@ -463,8 +468,9 @@ window.__ModuleLoader__.load({
 		    ] })
 		  ] });
 		}
-		function Field({ field, value, models, overridden, invalid, onChange, onRevert }) {
+		function Field({ field, value, models, visionFiles, overridden, invalid, onChange, onRevert }) {
 		  const isModelPicker = field.key === "selectedModel";
+		  const isVisionPicker = field.key === "mmprojFile";
 		  const control = () => {
 		    if (isModelPicker) {
 		      return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
@@ -481,6 +487,27 @@ window.__ModuleLoader__.load({
 		          ] }, m.id))
 		        ] }),
 		        models.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.modelMeta, children: "模型目录里还没有 .gguf 文件。把模型放进去后点上面的「重新扫描」。" }) : null
+		      ] });
+		    }
+		    if (isVisionPicker) {
+		      const selected = typeof value === "string" ? value.trim() : "";
+		      const missing = selected !== "" && !visionFiles.some((f) => f.id === selected);
+		      return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+		        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("select", { style: S.select, value: selected, onChange: (e) => onChange(e.target.value), children: [
+		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "", children: "（自动：同目录能唯一确定归属时自动关联）" }),
+		          visionFiles.map((f) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("option", { value: f.id, children: [
+		            f.id,
+		            " · ",
+		            f.sizeText
+		          ] }, f.id)),
+		          missing ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("option", { value: selected, children: [
+		            selected,
+		            "（不在扫描结果里）"
+		          ] }) : null
+		        ] }),
+		        visionFiles.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.modelMeta, children: "模型目录里还没有 mmproj-*.gguf。需要图像输入时把视觉投影文件放进模型目录，再点上面的「重新扫描」； 纯文本模型保持「自动」即可。" }) : null,
+		        missing ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { ...S.modelMeta, color: "#b02525", opacity: 1 }, children: "⚠ 选中的文件已不在模型目录里（或无权限读取）。加载时会被忽略或导致 --mmproj 报错，请重新选择。" }) : null,
+		        !missing && selected === "" && visionFiles.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.modelMeta, children: "当前是「自动」：只有与模型同目录、且能唯一确定归属的 mmproj 才会随模型一起加载。" }) : null
 		      ] });
 		    }
 		    switch (field.kind) {

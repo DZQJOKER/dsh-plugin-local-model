@@ -1,6 +1,6 @@
 import type { Log } from './log.js';
 import type { ResolvedConfig } from './configResolve.js';
-import { type LocalModelEntry } from './registry.js';
+import { type LocalModelEntry, type ModelShard } from './registry.js';
 import { type FlashAttnMode } from './llama/capabilities.js';
 import { type LlamaServerExitInfo } from './llama/runner.js';
 export type RuntimeState = 'disabled' | 'idle' | 'starting' | 'ready' | 'stopping' | 'failed';
@@ -38,6 +38,8 @@ export interface RuntimeStatus {
     modelsFound: number;
     modelsDir: string;
     runtimeDir: string;
+    /** 本次加载会下发给 llama-server 的 --mmproj（绝对路径）；无视觉能力时为 null。 */
+    visionProjector: string | null;
 }
 /** 插件向生命周期层注入的代理句柄，避免 lifecycle 直接依赖 http 实现。 */
 export interface ProxyHost {
@@ -128,6 +130,7 @@ export declare class LocalModelRuntime {
     private ticker;
     private restartTimer;
     private models;
+    private visionProjectors;
     private modelsScannedAt;
     private selectedOverride;
     private upstreamPort;
@@ -174,6 +177,13 @@ export declare class LocalModelRuntime {
     reload(reason?: string): Promise<void>;
     refreshModels(force?: boolean): Promise<LocalModelEntry[]>;
     listModels(): LocalModelEntry[];
+    /** 模型目录里扫到的全部视觉投影文件（供设置页的下拉框）。 */
+    listVisionProjectors(): ModelShard[];
+    /**
+     * 本次加载实际会下发的 --mmproj（绝对路径）；没有视觉能力时为 null。
+     * 取值规则与拼参数时完全一致 —— 界面显示的和真正下发的不该是两回事。
+     */
+    effectiveVisionProjector(entry?: LocalModelEntry | null): string | null;
     /** 会话内切换模型：能找到持久化钩子就落盘，否则只在本进程生效。 */
     selectModel(id: string): Promise<LocalModelEntry>;
     get selectedModelId(): string;

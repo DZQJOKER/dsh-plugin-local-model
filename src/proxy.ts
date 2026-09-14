@@ -1,6 +1,7 @@
 import http from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Log } from './log.js'
+import { isChatCompletionPath, rewriteChatRequestBody, type ThinkPolicy } from './requestRewrite.js'
 
 export interface ProxyOptions {
   host: string
@@ -17,10 +18,23 @@ export interface ProxyOptions {
   modelId: () => string
   modelDisplayName: () => string
   apiKey: () => string
+  /**
+   * 本次请求要用的思考开关策略。返回 null（或压根不提供）= 完全不动请求体、原样直通。
+   * 做成回调而不是启动快照：设置随时可能被改，代理必须按最新值走。
+   */
+  thinkPolicy?: () => ThinkPolicy | null
   log: Log
 }
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'upgrade'])
+
+/**
+ * 需要改写请求体时的读取上限。
+ *
+ * 对话补全的请求体大小由上下文长度决定（1M ctx 的纯文本也才几 MB），64 MB 足够宽裕；
+ * 设这个上限是为了「宁可原样放行，也不把几百 MB 读进内存」。
+ */
+const MAX_REWRITE_BYTES = 64 * 1024 * 1024
 
 function json(res: ServerResponse, status: number, payload: unknown): void {
   const body = Buffer.from(JSON.stringify(payload, null, 2), 'utf8')
@@ -210,7 +224,24 @@ export class LocalModelProxy {
     }
   }
 
-  private pipe(req: IncomingMessage, res: ServerResponse, target: string, url: URL): Promise<void> {
+  private async pipe(req: IncomingMessage, res: ServerResponse, target: string, url: URL): Promise<void> {
+    // 思考开关只在 POST 的对话补全上生效；其它一切请求连请求体都不必读，保持原来的流式直通。
+    const policy = this.options.thinkPolicy?.() ?? null
+    const shouldRewrite = policy !== null && req.method === 'POST' && isChatCompletionPath(url.pathname)
+
+    let body: Buffer | null = null
+    if (shouldRewrite && policy) {
+      try {
+        const outcome = rewriteChatRequestBody(await readRequestBody(req, MAX_REWRITE_BYTES), policy)
+        body = outcome.body
+        if (outcome.notice) this.options.log.debug(`未改写请求体：${outcome.notice}`)
+      } catch (error) {
+        this.options.log.error(`读取请求体失败：${(error as Error).message}`)
+        if (!res.headersSent) json(res, 413, { error: { message: (error as Error).message, type: 'local_model_request_error' } })
+        return
+      }
+    }
+
     return new Promise<void>((resolve) => {
       const base = new URL(target)
       const headers: http.OutgoingHttpHeaders = {}
@@ -221,6 +252,13 @@ export class LocalModelProxy {
         headers[key] = value
       }
       headers.host = base.host
+
+      if (body !== null) {
+        // 改写会改变长度：原样透传 content-length / transfer-encoding 会让上游读到半截或直接挂住。
+        delete headers['content-length']
+        delete headers['transfer-encoding']
+        headers['content-length'] = String(body.byteLength)
+      }
 
       const upstreamReq = http.request(
         {
@@ -258,9 +296,48 @@ export class LocalModelProxy {
       res.once('close', () => upstreamReq.destroy())
       req.once('aborted', () => upstreamReq.destroy())
 
-      req.pipe(upstreamReq)
+      if (body !== null) upstreamReq.end(body)
+      else req.pipe(upstreamReq)
     })
   }
+}
+
+/**
+ * 读满整个请求体；超过上限直接失败，由调用方降级报错而不是把内存吃满。
+ *
+ * 超过上限时**不** destroy 请求：让它自己流完，否则连那句 413 都发不出去，
+ * 用户只会看到连接被重置。之后的 chunk 直接丢掉（failed 之后不再累积）。
+ */
+function readRequestBody(req: IncomingMessage, limitBytes: number): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    let settled = false
+
+    const fail = (error: Error): void => {
+      if (settled) return
+      settled = true
+      chunks.length = 0
+      reject(error)
+    }
+
+    req.on('data', (chunk: Buffer) => {
+      if (settled) return
+      size += chunk.length
+      if (size > limitBytes) {
+        fail(new Error(`请求体超过 ${Math.round(limitBytes / 1024 / 1024)} MB，本地模型代理不处理这么大的对话请求`))
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      if (settled) return
+      settled = true
+      resolve(Buffer.concat(chunks))
+    })
+    req.on('aborted', () => fail(new Error('请求在发送过程中被中断')))
+    req.on('error', (error) => fail(error))
+  })
 }
 
 function isStatusPath(pathname: string): boolean {

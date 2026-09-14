@@ -9,6 +9,8 @@ export interface LocalModelConfig {
     runtimeDir: string;
     llamaServerPath: string;
     selectedModel: string;
+    /** 手动指定的视觉投影文件（mmproj）；留空 = 沿用同目录的自动关联。 */
+    mmprojFile: string;
     preload: boolean;
     host: string;
     port: number;
@@ -37,6 +39,10 @@ export interface LocalModelConfig {
     cacheTypeV: 'auto' | 'f16' | 'q8_0' | 'q4_0' | 'q4_1' | 'q5_0' | 'q5_1' | 'bf16' | 'f32' | 'iq4_nl';
     jinja: boolean;
     chatTemplate: string;
+    /** 是否让模型输出思考内容（chat_template_kwargs.enable_thinking）。 */
+    enableThinking: boolean;
+    /** 是否在上下文中保留历史消息里的 think 内容（chat_template_kwargs.preserve_thinking）。 */
+    preserveThinking: boolean;
     mmap: boolean;
     mlock: boolean;
     apiKey: string;
@@ -64,6 +70,7 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     runtimeDir: string;
     llamaServerPath: string;
     selectedModel: string;
+    mmprojFile: string;
     preload: boolean;
     host: string;
     port: number;
@@ -80,6 +87,8 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     cacheTypeV: "auto" | "f16" | "q8_0" | "q4_0" | "q4_1" | "q5_0" | "q5_1" | "bf16" | "f32" | "iq4_nl";
     jinja: boolean;
     chatTemplate: string;
+    enableThinking: boolean;
+    preserveThinking: boolean;
     mmap: boolean;
     mlock: boolean;
     apiKey: string;

@@ -181,6 +181,14 @@ export function LocalModelSection() {
             <span style={S.metaLabel}>模型总数：</span>
             {state.runtime.modelsFound}
           </div>
+          <div>
+            <span style={S.metaLabel}>视觉投影：</span>
+            {state.runtime.visionProjector ? (
+              <span style={S.mono}>{state.runtime.visionProjector}</span>
+            ) : (
+              '未启用（纯文本）'
+            )}
+          </div>
           {isReady && state.runtime.unloadAt ? (
             <div>
               <span style={S.metaLabel}>自动卸载：</span>
@@ -233,6 +241,7 @@ export function LocalModelSection() {
               field={field}
               value={valueOf(field.key)}
               models={state.models}
+              visionFiles={state.visionFiles ?? []}
               overridden={overridden.has(field.key) && !unset.includes(field.key) && !(field.key in draft)}
               invalid={invalid.includes(field.key)}
               onChange={(raw) => setValue(field, raw)}
@@ -298,8 +307,9 @@ export function LocalModelSection() {
   )
 }
 
-function Field({ field, value, models, overridden, invalid, onChange, onRevert }) {
+function Field({ field, value, models, visionFiles, overridden, invalid, onChange, onRevert }) {
   const isModelPicker = field.key === 'selectedModel'
+  const isVisionPicker = field.key === 'mmprojFile'
 
   const control = () => {
     if (isModelPicker) {
@@ -320,6 +330,41 @@ function Field({ field, value, models, overridden, invalid, onChange, onRevert }
           {models.length === 0 ? (
             <div style={S.modelMeta}>
               模型目录里还没有 .gguf 文件。把模型放进去后点上面的「重新扫描」。
+            </div>
+          ) : null}
+        </>
+      )
+    }
+
+    if (isVisionPicker) {
+      const selected = typeof value === 'string' ? value.trim() : ''
+      const missing = selected !== '' && !visionFiles.some((f) => f.id === selected)
+      return (
+        <>
+          <select style={S.select} value={selected} onChange={(e) => onChange(e.target.value)}>
+            <option value="">（自动：同目录能唯一确定归属时自动关联）</option>
+            {visionFiles.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.id} · {f.sizeText}
+              </option>
+            ))}
+            {/* 手改配置写了个绝对路径、或文件已被移走时，也要把当前值显示出来，别让下拉框看起来「没选」。 */}
+            {missing ? <option value={selected}>{selected}（不在扫描结果里）</option> : null}
+          </select>
+          {visionFiles.length === 0 ? (
+            <div style={S.modelMeta}>
+              模型目录里还没有 mmproj-*.gguf。需要图像输入时把视觉投影文件放进模型目录，再点上面的「重新扫描」；
+              纯文本模型保持「自动」即可。
+            </div>
+          ) : null}
+          {missing ? (
+            <div style={{ ...S.modelMeta, color: '#b02525', opacity: 1 }}>
+              ⚠ 选中的文件已不在模型目录里（或无权限读取）。加载时会被忽略或导致 --mmproj 报错，请重新选择。
+            </div>
+          ) : null}
+          {!missing && selected === '' && visionFiles.length > 0 ? (
+            <div style={S.modelMeta}>
+              当前是「自动」：只有与模型同目录、且能唯一确定归属的 mmproj 才会随模型一起加载。
             </div>
           ) : null}
         </>

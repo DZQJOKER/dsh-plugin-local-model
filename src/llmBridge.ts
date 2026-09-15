@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { DEFAULT_MODEL_ALIAS, LOCAL_MODEL_ID, LOCAL_ROUTE_NAME } from './configResolve.js'
 import type { Log } from './log.js'
 import type { ResolvedConfig } from './configResolve.js'
 
@@ -18,14 +19,22 @@ export interface RouteSpec {
   streamIdleTimeoutMs: number
 }
 
+/**
+ * 组装路由描述。
+ *
+ * 注意哪些值来自常量：路由名、模型 id、别名都曾是设置项，现已按用户要求从 schema 删除、
+ * 改为常量 —— 这三个值本来就不该随每次配置漂移，dsh 侧的 settings.yaml 引用的是它们。
+ * `contextWindow` 则取 `ctxSize`（不再是独立设置），这样「dsh 声明的窗口」与
+ * 「llama.cpp 的 -c」同源，不可能出现声明比实际大、长会话中途崩的情况。
+ */
 export function buildRouteSpec(config: ResolvedConfig, baseURL: string): RouteSpec {
   return {
-    routeName: config.routeName,
+    routeName: LOCAL_ROUTE_NAME,
     displayName: '本地模型（llama.cpp）',
     baseURL,
-    modelId: config.routeModelId,
-    modelName: `本地模型 · ${config.modelAlias}`,
-    contextWindow: config.contextWindow,
+    modelId: LOCAL_MODEL_ID,
+    modelName: `本地模型 · ${DEFAULT_MODEL_ALIAS}`,
+    contextWindow: config.ctxSize,
     maxTokens: config.maxTokens,
     apiKeyEnv: config.apiKey ? 'DSH_LOCAL_MODEL_API_KEY' : '',
     apiKey: config.apiKey,

@@ -4,8 +4,8 @@
 #   • 插件日志里出现「llm 服务未暴露可用的路由注册方法」；
 #   • 或者在 Harness 设置 → 本地模型 里点「测试/查看路由」，插件会打印同样的内容。
 #
-# 关键点：model id 固定为 local（与插件的 modelAlias / routeModelId 一致）。
-# 这样换模型文件时只改插件设置，dsh 侧配置一行都不用动。
+# 关键点：路由名固定为 local-llama、model id 固定为 local（0.4.0 起它们已从设置里删除，
+# 改为插件内的常量）。这样换模型文件时只改插件设置，dsh 侧配置一行都不用动。
 #
 # 已存在 providers 时，把 local-llama 这一段「并进」原来的 providers 下面，不要整体覆盖。
 
@@ -21,6 +21,7 @@ llm-pi-ai:
       models:
         - id: local
           name: 本地模型
-          # 必须 <= 插件里的 ctxSize，且要给 dsh 自身注入的上下文留出余量。
-          contextWindow: 32768
+          # 必须 <= 插件里的 ctxSize。插件自动注册时会把这里填成 ctxSize，
+          # 手写配置时请自己跟上 —— 声明得比实际大，长会话会在中途断掉。
+          contextWindow: 8192
           maxTokens: 8192

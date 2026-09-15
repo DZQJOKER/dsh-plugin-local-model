@@ -1,6 +1,7 @@
 import type { Log } from './log.js';
 import type { ResolvedConfig } from './configResolve.js';
 import { type LocalModelEntry, type ModelShard } from './registry.js';
+import { type LlamaServerArgInput } from './llama/args.js';
 import { type FlashAttnMode } from './llama/capabilities.js';
 import { type LlamaServerExitInfo } from './llama/runner.js';
 export type RuntimeState = 'disabled' | 'idle' | 'starting' | 'ready' | 'stopping' | 'failed';
@@ -80,6 +81,8 @@ export interface LaunchInput {
         auto: boolean;
         all: boolean;
     };
+    /** 该构建公开的选项名集合；null = 探测失败（新选项一律不下发）。 */
+    knownFlags: ReadonlySet<string> | null;
     log: Log;
     /** 子进程退出回调。默认实现会把它挂到真实进程上，用于崩溃自愈。 */
     onExit: (info: LlamaServerExitInfo) => void;
@@ -115,6 +118,22 @@ export declare function shouldUnload(input: {
     lastActivityAt: number;
     now: number;
 }): boolean;
+/**
+ * 从「配置 + 模型条目 + 本次探测结果」拼出 llama-server 的参数输入。
+ *
+ * 抽出来的理由很实在：这个字面量有 30 多个字段，而调用点有两处（默认启动器、
+ * doStart 的加载尝试循环）。以前是各写一份，加一个参数就得在两处各改一次 ——
+ * 漏一处就是「某个参数在重试路径上不生效」这类极难查的错位。现在只有这一个真源。
+ */
+export declare function buildArgInput(config: ResolvedConfig, entry: LocalModelEntry, options: {
+    port: number;
+    flashAttnMode: FlashAttnMode;
+    gpuLayersSupport: {
+        auto: boolean;
+        all: boolean;
+    };
+    knownFlags: ReadonlySet<string> | null;
+}): LlamaServerArgInput;
 /** 默认启动方式：拼参数 → 起真进程。 */
 export declare function defaultServerLauncher(input: LaunchInput): LlamaServerLike;
 /**
@@ -235,8 +254,8 @@ export declare class LocalModelRuntime {
     /**
      * 启动后核对「实际生效的上下文」。
      *
-     * `--fit` 会在显存紧张时把上下文调小，而 dsh 侧声明的是原值。两者不一致时，
-     * 长会话会在超出实际 ctx 后中断，且现场看不出原因 —— 因此这里主动对一次账。
+     * `--fit` 会在显存紧张时把上下文调小，而 dsh 侧声明的窗口是 `ctxSize`（两者同源）。
+     * 一旦实际值小于声明值，长会话会在超出实际 ctx 后中断，且现场看不出原因 —— 因此主动对一次账。
      */
     private reconcileContext;
     private armTicker;

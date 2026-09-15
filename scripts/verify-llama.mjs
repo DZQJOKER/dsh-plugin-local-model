@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 
 import { probeCapabilities, unknownFlags } from '../lib/llama/capabilities.js'
 import { buildLlamaServerArgs, renderCommandLine, redactArgs, normalizeFlashAttn } from '../lib/llama/args.js'
+import { buildArgInput } from '../lib/lifecycle.js'
 import { locateLlamaServer } from '../lib/llama/detect.js'
 import { ConfigStore } from '../lib/configStore.js'
 import { resolveConfig } from '../lib/configResolve.js'
@@ -75,29 +76,22 @@ async function main() {
   const model = flag('model') ?? path.join(resolved.modelsDir, resolved.selectedModel || '')
   const flashSetting = normalizeFlashAttn(resolved.flashAttention)
 
-  const built = buildLlamaServerArgs({
-    modelPath: SENTINEL_MODEL,
-    host: resolved.host,
-    port: resolved.port + 1,
-    alias: resolved.modelAlias,
-    ctxSize: resolved.ctxSize,
-    gpuLayers: resolved.gpuLayers,
-    gpuLayersMode: resolved.gpuLayersMode,
-    gpuLayersSupport: capabilities.gpuLayers,
-    threads: resolved.threads,
-    threadsBatch: resolved.threadsBatch,
-    batchSize: resolved.batchSize,
-    ubatchSize: resolved.ubatchSize,
-    flashAttention: flashSetting,
-    flashAttnMode: capabilities.flashAttnMode,
-    jinja: resolved.jinja,
-    chatTemplate: resolved.chatTemplate,
-    mmproj: '',
-    mmap: resolved.mmap,
-    mlock: resolved.mlock,
-    apiKey: resolved.apiKey,
-    extraArgs: resolved.extraArgs,
-  })
+  // 复用生命周期层的 buildArgInput，而不是在这里再抄一份参数字面量。
+  // 这个脚本的全部价值就是「插件实际会下发什么」，抄一份就会随着加参数而悄悄过期
+  // （症状是最新加的开关永远不被验收）。
+  const built = buildLlamaServerArgs(
+    buildArgInput(
+      resolved,
+      // 只为凑出 --mmproj 与 -m：哨兵路径保证不会真的加载模型。
+      { path: SENTINEL_MODEL, mmproj: null },
+      {
+        port: resolved.port + 1,
+        flashAttnMode: capabilities.flashAttnMode,
+        gpuLayersSupport: capabilities.gpuLayers,
+        knownFlags: capabilities.flags,
+      },
+    ),
+  )
 
   console.log(`\n  配置里的模型：${model || '(尚未选择)'}`)
   console.log(`  Flash Attention 设置：${flashSetting}（构建形状 ${capabilities.flashAttnMode}）`)

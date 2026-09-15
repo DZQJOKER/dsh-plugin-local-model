@@ -11,7 +11,7 @@ import { fieldTypeMap } from './configStore.js'
  * 加一个字段只需要改一处，界面自动出现。
  *
  * 这里只额外补两样 schema 表达不了的东西：
- *   - 分组（纯展示：把 43 个字段分成 6 组，不然一屏铺不完）；
+ *   - 分组（纯展示：把字段分成 6 组，不然一屏铺不完。字段数刻意不写死在这里 —— 它会变）；
  *   - 校验区间（界面上的 min/max 提示）。
  */
 
@@ -49,8 +49,19 @@ const GROUP_DEFS: { id: string; title: string; hint: string; keys: (keyof LocalM
   {
     id: 'model',
     title: '模型与目录',
-    hint: '模型从哪里读、当前选中哪一个；需要图像输入时在这里挂上视觉投影文件。',
-    keys: ['enabled', 'selectedModel', 'mmprojFile', 'mtp', 'modelsDir', 'runtimeDir', 'llamaServerPath', 'preload'],
+    hint: '模型从哪里读、当前选中哪一个；需要图像输入时在这里挂上视觉投影文件并设定图像 token 预算。',
+    keys: [
+      'enabled',
+      'selectedModel',
+      'mmprojFile',
+      'mtp',
+      'imageMinTokens',
+      'imageMaxTokens',
+      'modelsDir',
+      'runtimeDir',
+      'llamaServerPath',
+      'preload',
+    ],
   },
   {
     id: 'server',
@@ -64,6 +75,7 @@ const GROUP_DEFS: { id: string; title: string; hint: string; keys: (keyof LocalM
     hint: '直接映射到 llama-server 命令行。显存不够先降上下文长度或换更低比特量化。',
     keys: [
       'ctxSize',
+      'maxTokens',
       'gpuLayersMode',
       'gpuLayers',
       'cacheTypeK',
@@ -73,6 +85,7 @@ const GROUP_DEFS: { id: string; title: string; hint: string; keys: (keyof LocalM
       'batchSize',
       'ubatchSize',
       'flashAttention',
+      'reasoningBudget',
       'jinja',
       'chatTemplate',
       'enableThinking',
@@ -82,16 +95,29 @@ const GROUP_DEFS: { id: string; title: string; hint: string; keys: (keyof LocalM
     ],
   },
   {
+    id: 'sampling',
+    title: '采样与 KV 缓存',
+    hint:
+      '采样参数会显式下发给 llama-server 并覆盖它自己的默认值（本组默认值与 llama.cpp 默认值并不相同，表现在各项说明里）。' +
+      'KV 相关的两个选项用于长上下文：统一缓冲减少碎片，流式暂存把一部分 KV 放到主机内存。',
+    keys: [
+      'kvUnified',
+      'kvStreamStageMib',
+      'temp',
+      'topK',
+      'topP',
+      'minP',
+      'presencePenalty',
+      'repeatPenalty',
+      'repeatLastN',
+      'seed',
+    ],
+  },
+  {
     id: 'lifecycle',
     title: '加载与卸载',
     hint: '空闲多久释放显存，以及加载超时与崩溃重试。',
     keys: ['idleUnloadMinutes', 'startupTimeoutMs', 'shutdownGraceMs', 'autoRestart', 'maxRestarts'],
-  },
-  {
-    id: 'route',
-    title: '接入 dsh',
-    hint: '本地端点如何出现在 dsh 的模型选择器里。',
-    keys: ['routeName', 'modelAlias', 'routeModelId', 'contextWindow', 'maxTokens', 'registerRoute', 'exposeTool', 'allowModelControl'],
   },
   {
     id: 'advanced',
@@ -115,8 +141,19 @@ const RANGES: Partial<Record<keyof LocalModelConfig, [number, number]>> = {
   startupTimeoutMs: [5_000, 3_600_000],
   shutdownGraceMs: [500, 120_000],
   maxRestarts: [0, 10],
-  contextWindow: [512, 1_048_576],
   maxTokens: [64, 131_072],
+  kvStreamStageMib: [0, 1_048_576],
+  temp: [0, 100],
+  topK: [0, 1_048_576],
+  topP: [0, 1],
+  minP: [0, 1],
+  presencePenalty: [-10, 10],
+  repeatPenalty: [0, 10],
+  repeatLastN: [-1, 1_048_576],
+  seed: [-1, 2_147_483_647],
+  imageMinTokens: [0, 1_048_576],
+  imageMaxTokens: [0, 1_048_576],
+  reasoningBudget: [-1, 1_048_576],
 }
 
 /** 字段的中文短标签。schema 的 description 是句子，这里是控件旁边的短名。 */
@@ -142,6 +179,19 @@ const LABELS: Partial<Record<keyof LocalModelConfig, string>> = {
   flashAttention: 'Flash Attention',
   cacheTypeK: 'KV cache 精度（K）',
   cacheTypeV: 'KV cache 精度（V）',
+  kvUnified: '统一 KV 缓存',
+  kvStreamStageMib: 'KV 主机内存暂存（MiB）',
+  temp: '温度（temp）',
+  topK: 'Top-K',
+  topP: 'Top-P（核采样）',
+  minP: 'Min-P',
+  presencePenalty: '存在惩罚',
+  repeatPenalty: '重复惩罚',
+  repeatLastN: '重复惩罚范围',
+  seed: '随机种子',
+  imageMinTokens: '图像最少 token',
+  imageMaxTokens: '图像最多 token',
+  reasoningBudget: '推理 token 预算',
   jinja: 'Jinja 模板',
   chatTemplate: '对话模板',
   enableThinking: '启用思考',
@@ -156,14 +206,7 @@ const LABELS: Partial<Record<keyof LocalModelConfig, string>> = {
   shutdownGraceMs: '卸载宽限（毫秒）',
   autoRestart: '崩溃自动重启',
   maxRestarts: '最大重启次数',
-  routeName: '路由名',
-  modelAlias: '模型别名',
-  routeModelId: '模型 ID',
-  contextWindow: '声明上下文',
-  maxTokens: '最大输出',
-  registerRoute: '自动注册路由',
-  exposeTool: '暴露 local_model 工具',
-  allowModelControl: '允许模型启停',
+  maxTokens: '单次最大输出 tokens',
   logLevel: '日志级别',
 }
 

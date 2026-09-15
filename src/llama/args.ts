@@ -42,6 +42,33 @@ export interface LlamaServerArgInput {
   cacheTypeK?: string
   /** V 缓冲的量化精度；'auto' = 不下发。未传视为 q8_0。 */
   cacheTypeV?: string
+  /** 统一的 KV 缓存管理策略（--kv-unified）。 */
+  kvUnified: boolean
+  /** --kv-stream-stage-mib；0 = 不下发。 */
+  kvStreamStageMib: number
+  /** 采样参数：全部按配置显式下发（它们的默认值就是用户指定的值）。 */
+  temp: number
+  topK: number
+  topP: number
+  minP: number
+  presencePenalty: number
+  repeatPenalty: number
+  repeatLastN: number
+  seed: number
+  /** 每张图的最少/最多 token 数（--image-min-tokens / --image-max-tokens）；0 = 不下发该项。 */
+  imageMinTokens: number
+  imageMaxTokens: number
+  /** 推理 token 预算（--reasoning-budget）。0 = 关掉思考，-1 = 不限。 */
+  reasoningBudget: number
+  /**
+   * 这个构建在 `--help` 里公开的选项名集合。
+   *
+   * `null` = 探测失败/未知。新加入的那些只在较新构建或特定分支存在的选项
+   * （--kv-unified / --kv-stream-stage-mib / --image-*-tokens / --reasoning-budget）
+   * 只有在确认构建认得时才下发 —— 否则 llama-server 会因为未知参数**直接启动失败**，
+   * 那等于「加了个开关，插件反而起不来了」。
+   */
+  knownFlags: ReadonlySet<string> | null
   /** --jinja：OpenAI 风格 function calling 依赖它，默认开。 */
   jinja: boolean
   chatTemplate: string
@@ -167,6 +194,18 @@ export function flashAttnArgs(setting: unknown, mode: FlashAttnMode): { args: st
   }
 }
 
+/**
+ * 把配置里的数字渲染成命令行文本。
+ *
+ * 为什么不能直接 `String(value)`：采样参数是小数，用户在界面上敲的 0.75 经 JSON 往返后
+ * 可能是 0.7500000000000001 这类浮点噪声，直接拼进命令行既难看又可能被 llama.cpp 判为非法。
+ * 统一截到 6 位有效小数再去掉尾零。
+ */
+export function formatNumber(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  return String(Number(value.toFixed(6)))
+}
+
 export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs {
   const args: string[] = []
   const usedFlags: string[] = []
@@ -215,6 +254,60 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
   if (cacheK !== 'auto') flag('--cache-type-k', cacheK)
   const cacheV = normalizeCacheType(input.cacheTypeV)
   if (cacheV !== 'auto') flag('--cache-type-v', cacheV)
+
+  // ── KV 缓存策略 ──────────────────────────────────────────────────────────
+  /**
+   * 只在构建公开了这个选项时才下发。
+   *
+   * 被门控的都是「新」选项：--kv-unified 较新、--kv-stream-stage-mib 更是特定分支的私有参数、
+   * --image-*-tokens 要带动态分辨率的 mtmd、--reasoning-budget 也才合并不久。
+   * 不认识的构建收到它们会**直接启动失败**，所以宁可跳过并说明，也不能照发。
+   * 探测失败（knownFlags 为 null）时同样不下发 —— 与 --flash-attn 的取舍一致。
+   */
+  const skipped: string[] = []
+  const gate = (...tokens: string[]): void => {
+    const name = tokens[0]!
+    if (!input.knownFlags || !input.knownFlags.has(name)) {
+      skipped.push(name)
+      return
+    }
+    flag(...tokens)
+  }
+
+  if (input.kvUnified) gate('--kv-unified')
+  const stageMib = Math.round(input.kvStreamStageMib)
+  if (stageMib > 0) gate('--kv-stream-stage-mib', String(stageMib))
+
+  // ── 采样参数 ────────────────────────────────────────────────────────────
+  // 这些（-s/temp/top-k/top-p/min-p/penalties/repeat-last-n）在几乎所有 llama.cpp 版本里
+  // 都存在，因此**不**按探测门控；否则一次探测失败就会静默丢掉全部采样设置。
+  flag('--temp', formatNumber(input.temp))
+  flag('--top-k', String(Math.round(input.topK)))
+  flag('--top-p', formatNumber(input.topP))
+  flag('--min-p', formatNumber(input.minP))
+  flag('--presence-penalty', formatNumber(input.presencePenalty))
+  flag('--repeat-penalty', formatNumber(input.repeatPenalty))
+  flag('--repeat-last-n', String(Math.round(input.repeatLastN)))
+  flag('--seed', String(Math.round(input.seed)))
+
+  // ── 多模态图像预算 ──────────────────────────────────────────────────────
+  // max 必须 >= min，否则 llama.cpp 拒绝启动。就地收敛，与 -ub <= -b 同一处规则。
+  const imageMin = Math.max(0, Math.round(input.imageMinTokens))
+  const imageMax = Math.max(imageMin, Math.round(input.imageMaxTokens))
+  if (imageMin > 0) gate('--image-min-tokens', String(imageMin))
+  if (imageMax > 0) gate('--image-max-tokens', String(imageMax))
+
+  // ── 推理预算 ────────────────────────────────────────────────────────────
+  // 0 是有意义的取值（关掉思考），所以不按「> 0」判断，只在构建支持时才下发。
+  gate('--reasoning-budget', String(Math.round(input.reasoningBudget)))
+
+  if (skipped.length > 0) {
+    notices.push(
+      input.knownFlags
+        ? `这个 llama-server 不认识以下选项，已跳过（不影响加载）：${skipped.join('、')}`
+        : `无法探测这个 llama-server 支持哪些选项，已跳过：${skipped.join('、')}（宁可退回构建默认值，也不赌它认）`,
+    )
+  }
 
   if (input.jinja) flag('--jinja')
   if (input.chatTemplate.trim()) flag('--chat-template', input.chatTemplate.trim())

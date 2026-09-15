@@ -12,7 +12,7 @@ import {
   type ModelShard,
 } from './registry.js'
 import { ensureReadme } from './paths.js'
-import { buildLlamaServerArgs, DEFAULT_ALIAS } from './llama/args.js'
+import { buildLlamaServerArgs, DEFAULT_ALIAS, type LlamaServerArgInput } from './llama/args.js'
 import { describeSearchScope, locateLlamaServer } from './llama/detect.js'
 import {
   isFlashAttnFormError,
@@ -112,6 +112,8 @@ export interface LaunchInput {
   flashAttnMode: FlashAttnMode
   /** 该构建的 -ngl 是否接受 auto / all 关键字。 */
   gpuLayersSupport: { auto: boolean; all: boolean }
+  /** 该构建公开的选项名集合；null = 探测失败（新选项一律不下发）。 */
+  knownFlags: ReadonlySet<string> | null
   log: Log
   /** 子进程退出回调。默认实现会把它挂到真实进程上，用于崩溃自愈。 */
   onExit: (info: LlamaServerExitInfo) => void
@@ -160,26 +162,55 @@ export function shouldUnload(input: {
   return idleFor >= input.idleUnloadMs * 2
 }
 
-/** 默认启动方式：拼参数 → 起真进程。 */
-export function defaultServerLauncher(input: LaunchInput): LlamaServerLike {
-  const { config, entry, port, executable, log, onExit, flashAttnMode, gpuLayersSupport } = input
-  const built = buildLlamaServerArgs({
+/**
+ * 从「配置 + 模型条目 + 本次探测结果」拼出 llama-server 的参数输入。
+ *
+ * 抽出来的理由很实在：这个字面量有 30 多个字段，而调用点有两处（默认启动器、
+ * doStart 的加载尝试循环）。以前是各写一份，加一个参数就得在两处各改一次 ——
+ * 漏一处就是「某个参数在重试路径上不生效」这类极难查的错位。现在只有这一个真源。
+ */
+export function buildArgInput(
+  config: ResolvedConfig,
+  entry: LocalModelEntry,
+  options: {
+    port: number
+    flashAttnMode: FlashAttnMode
+    gpuLayersSupport: { auto: boolean; all: boolean }
+    knownFlags: ReadonlySet<string> | null
+  },
+): LlamaServerArgInput {
+  return {
     modelPath: entry.path,
     host: config.host,
-    port,
-    alias: config.modelAlias || DEFAULT_ALIAS,
+    port: options.port,
+    // 别名固定成常量（原 modelAlias 设置已删除），dsh 侧配置因此不必随模型文件变化。
+    alias: DEFAULT_ALIAS,
     ctxSize: config.ctxSize,
     gpuLayersMode: config.gpuLayersMode,
     gpuLayers: config.gpuLayers,
-    gpuLayersSupport,
+    gpuLayersSupport: options.gpuLayersSupport,
     threads: config.threads,
     threadsBatch: config.threadsBatch,
     batchSize: config.batchSize,
     ubatchSize: config.ubatchSize,
     flashAttention: config.flashAttention,
-    flashAttnMode,
+    flashAttnMode: options.flashAttnMode,
     cacheTypeK: config.cacheTypeK,
     cacheTypeV: config.cacheTypeV,
+    kvUnified: config.kvUnified,
+    kvStreamStageMib: config.kvStreamStageMib,
+    temp: config.temp,
+    topK: config.topK,
+    topP: config.topP,
+    minP: config.minP,
+    presencePenalty: config.presencePenalty,
+    repeatPenalty: config.repeatPenalty,
+    repeatLastN: config.repeatLastN,
+    seed: config.seed,
+    imageMinTokens: config.imageMinTokens,
+    imageMaxTokens: config.imageMaxTokens,
+    reasoningBudget: config.reasoningBudget,
+    knownFlags: options.knownFlags,
     jinja: config.jinja,
     chatTemplate: config.chatTemplate,
     // 视觉投影的实际取值与状态面板共用 effectiveVisionProjector —— 开 MTP 时这里拿到空串，
@@ -195,7 +226,15 @@ export function defaultServerLauncher(input: LaunchInput): LlamaServerLike {
     mlock: config.mlock,
     apiKey: config.apiKey,
     extraArgs: config.extraArgs,
-  })
+  }
+}
+
+/** 默认启动方式：拼参数 → 起真进程。 */
+export function defaultServerLauncher(input: LaunchInput): LlamaServerLike {
+  const { config, entry, port, executable, log, onExit, flashAttnMode, gpuLayersSupport, knownFlags } = input
+  const built = buildLlamaServerArgs(
+    buildArgInput(config, entry, { port, flashAttnMode, gpuLayersSupport, knownFlags }),
+  )
   return new LlamaServer({
     command: executable,
     args: built.args,
@@ -674,37 +713,15 @@ export class LocalModelRuntime {
       let failure: unknown = null
 
       for (const mode of attempts) {
-        const built = buildLlamaServerArgs({
-          modelPath: entry.path,
-          host: this.config.host,
-          port,
-          alias: this.config.modelAlias || DEFAULT_ALIAS,
-          ctxSize: this.config.ctxSize,
-          gpuLayersMode: this.config.gpuLayersMode,
-          gpuLayers: this.config.gpuLayers,
-          gpuLayersSupport: capabilities.gpuLayers,
-          threads: this.config.threads,
-          threadsBatch: this.config.threadsBatch,
-          batchSize: this.config.batchSize,
-          ubatchSize: this.config.ubatchSize,
-          flashAttention: this.config.flashAttention,
-          flashAttnMode: mode,
-          cacheTypeK: this.config.cacheTypeK,
-          cacheTypeV: this.config.cacheTypeV,
-          jinja: this.config.jinja,
-          chatTemplate: this.config.chatTemplate,
-          mmproj: effectiveVisionProjector({
-            modelsDir: this.config.modelsDir,
-            mmprojFile: this.config.mmprojFile,
-            autoMmproj: entry.mmproj,
-            mtp: this.config.mtp,
+        const built = buildLlamaServerArgs(
+          buildArgInput(this.config, entry, {
+            port,
+            flashAttnMode: mode,
+            gpuLayersSupport: capabilities.gpuLayers,
+            // 探测失败时传 null：新增的「新版本才有」的选项一律不下发，宁可退回构建默认值。
+            knownFlags: capabilities.ok ? capabilities.flags : null,
           }),
-          mtp: this.config.mtp,
-          mmap: this.config.mmap,
-          mlock: this.config.mlock,
-          apiKey: this.config.apiKey,
-          extraArgs: this.config.extraArgs,
-        })
+        )
         for (const notice of built.notices) this.log.warn(`参数提示：${notice}`)
 
         if (capabilities.ok) {
@@ -724,6 +741,7 @@ export class LocalModelRuntime {
           executable: location.path,
           flashAttnMode: mode,
           gpuLayersSupport: capabilities.gpuLayers,
+          knownFlags: capabilities.ok ? capabilities.flags : null,
           log: this.log,
           onExit: (info) => this.handleExit(info),
         })
@@ -758,7 +776,7 @@ export class LocalModelRuntime {
       this.loadedAt = Date.now()
       this.touch()
       this.setState('ready')
-      this.log.info(`本地模型已就绪：${this.proxy?.origin ?? ''}/v1（模型别名 ${this.config.modelAlias}）`)
+      this.log.info(`本地模型已就绪：${this.proxy?.origin ?? ''}/v1（模型别名 ${DEFAULT_ALIAS}）`)
       void this.reconcileContext(port)
     } catch (error) {
       const message = (error as Error).message
@@ -861,8 +879,8 @@ export class LocalModelRuntime {
   /**
    * 启动后核对「实际生效的上下文」。
    *
-   * `--fit` 会在显存紧张时把上下文调小，而 dsh 侧声明的是原值。两者不一致时，
-   * 长会话会在超出实际 ctx 后中断，且现场看不出原因 —— 因此这里主动对一次账。
+   * `--fit` 会在显存紧张时把上下文调小，而 dsh 侧声明的窗口是 `ctxSize`（两者同源）。
+   * 一旦实际值小于声明值，长会话会在超出实际 ctx 后中断，且现场看不出原因 —— 因此主动对一次账。
    */
   private async reconcileContext(port: number): Promise<void> {
     const fromProps = await fetchServerContext(this.config.host, port)
@@ -872,14 +890,16 @@ export class LocalModelRuntime {
     this.effectiveContext = effective
     this.emit()
 
-    if (effective < this.config.contextWindow) {
+    // 声明的上下文窗口就是 ctxSize（原 contextWindow 设置已删除，改为跟着 ctxSize 走）。
+    const declared = this.config.ctxSize
+    if (effective < declared) {
       this.log.warn(
-        `llama.cpp 实际生效的上下文是 ${effective}，小于 dsh 侧声明的 ${this.config.contextWindow}。` +
+        `llama.cpp 实际生效的上下文是 ${effective}，小于你设置的上下文长度 ${declared}。` +
           '这通常是因为显存自适应（--fit）把上下文压小了。为避免长会话在中途断掉，' +
-          `建议把「设置 → 本地模型 → 声明上下文」改成不超过 ${effective}，或者调小模型/量化以腾出显存。`,
+          `建议把「设置 → 本地模型 → 上下文长度」改成不超过 ${effective}，或者调小模型/量化以腾出显存。`,
       )
-    } else if (effective > this.config.contextWindow) {
-      this.log.debug(`llama.cpp 实际上下文 ${effective}，不低于声明的 ${this.config.contextWindow}`)
+    } else if (effective > declared) {
+      this.log.debug(`llama.cpp 实际上下文 ${effective}，不低于声明的 ${declared}`)
     }
   }
 

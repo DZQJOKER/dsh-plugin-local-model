@@ -15,7 +15,7 @@ import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { buildLlamaServerArgs, splitArgs, redactArgs, renderCommandLine, flashAttnArgs, normalizeFlashAttn, gpuLayersArgs, normalizeGpuLayersMode, normalizeCacheType } from '../lib/llama/args.js'
+import { buildLlamaServerArgs as buildArgsRaw, splitArgs, redactArgs, renderCommandLine, flashAttnArgs, normalizeFlashAttn, gpuLayersArgs, normalizeGpuLayersMode, normalizeCacheType, formatNumber } from '../lib/llama/args.js'
 import {
   detectFlashAttnMode,
   isFlashAttnFormError,
@@ -59,11 +59,56 @@ function section(title) {
   console.log(`\n${title}`)
 }
 
+/** 一个「构建认识全部选项」的集合。给用例当 knownFlags 用，免得门控把参数静默吞掉。 */
+const KNOWN_FLAGS = new Set([
+  '-m', '--host', '--port', '--alias', '-c', '-ngl', '-t', '--threads-batch', '-b', '-ub',
+  '--flash-attn', '--cache-type-k', '--cache-type-v', '--jinja', '--chat-template', '--mmproj',
+  '--no-mmap', '--mlock', '--api-key', '--spec-type',
+  '--kv-unified', '--kv-stream-stage-mib',
+  '--temp', '--top-k', '--top-p', '--min-p', '--presence-penalty', '--repeat-penalty',
+  '--repeat-last-n', '--seed',
+  '--image-min-tokens', '--image-max-tokens', '--reasoning-budget',
+])
+
+/**
+ * 新增参数的中性基线。
+ *
+ * 每个用例只该关心自己那一项，不该被别的参数干扰，所以给一套「尽量无副作用」的值：
+ *   - KV / 图像三项取 0（= 不下发），于是不会出现在命令行里；
+ *   - 采样参数取 0 —— 它们**会**被显式下发（这就是新行为），但取值不影响顺序/邻接类断言；
+ *   - knownFlags 给全，避免「被门控跳过」的提示污染 notices 断言。
+ * 需要验证门控或具体取值的用例，自行覆盖对应字段即可。
+ */
+const NEW_PARAMS = {
+  kvUnified: false,
+  kvStreamStageMib: 0,
+  temp: 0,
+  topK: 0,
+  topP: 0,
+  minP: 0,
+  presencePenalty: 0,
+  repeatPenalty: 0,
+  repeatLastN: 0,
+  seed: 0,
+  imageMinTokens: 0,
+  imageMaxTokens: 0,
+  reasoningBudget: 0,
+  knownFlags: KNOWN_FLAGS,
+}
+
+/**
+ * 测试专用的拼装入口：自动补上 NEW_PARAMS 基线再交给真实函数。
+ *
+ * 这样加新参数时不必回来逐个补全十几个字面量 —— 漏一个就会让那个用例静默走错分支，
+ * 而且症状是「断言通过但测的不是它以为的东西」，比直接报错难查得多。
+ */
+const buildArgs = (input) => buildArgsRaw({ ...NEW_PARAMS, ...input })
+
 // ── 参数拼装 ────────────────────────────────────────────────────────────────
 section('llama-server 参数拼装')
 
 test('基础参数齐全且顺序稳定', () => {
-  const { args } = buildLlamaServerArgs({
+  const { args } = buildArgs({
     modelPath: '/m/a.gguf',
     host: '127.0.0.1',
     port: 18081,
@@ -98,7 +143,7 @@ test('基础参数齐全且顺序稳定', () => {
 })
 
 test('ubatch 大于 batch 时自动收敛（否则 llama.cpp 直接启动失败）', () => {
-  const { args } = buildLlamaServerArgs({
+  const { args } = buildArgs({
     modelPath: 'm.gguf',
     host: 'h',
     port: 1,
@@ -127,7 +172,7 @@ test('ubatch 大于 batch 时自动收敛（否则 llama.cpp 直接启动失败�
 })
 
 test('额外参数按 shell 规则分词并追加在末尾', () => {
-  const { args } = buildLlamaServerArgs({
+  const { args } = buildArgs({
     modelPath: 'm.gguf',
     host: 'h',
     port: 1,
@@ -197,6 +242,15 @@ const REAL_HELP = [
   '--api-key KEY                           API key to use for authentication',
   '-ctk,  --cache-type-k TYPE              KV cache data type for K',
   '-ctv,  --cache-type-v TYPE              KV cache data type for V',
+  // 采样段：真实 llama.cpp 的 --help 里一直有这一块，插件现在会显式下发它们。
+  '-s,    --seed N                         RNG seed (default: -1, use random seed for < 0)',
+  '--temp N                                temperature (default: 0.80)',
+  '--top-k N                               top-k sampling (default: 40, 0 = disabled)',
+  '--top-p N                               top-p sampling (default: 0.95, 1.0 = disabled)',
+  '--min-p N                               min-p sampling (default: 0.05, 0.0 = disabled)',
+  '--presence-penalty N                    repeat alpha presence penalty (default: 0.00)',
+  '--repeat-penalty N                      penalize repeat sequence of tokens (default: 1.10)',
+  '--repeat-last-n N                       last n tokens to penalize (default: 64)',
 ].join('\n')
 
 /** 老构建的样子：--flash-attn 是裸开关。 */
@@ -253,7 +307,7 @@ test('形状未知：不下发，并说明原因（宁可退回默认值也不�
 })
 
 test('本次故障的确切形态：裸 flag 紧跟 --mmproj 会被吞掉', () => {
-  const built = buildLlamaServerArgs({
+  const built = buildArgs({
     modelPath: 'm.gguf',
     host: 'h',
     port: 1,
@@ -271,7 +325,7 @@ test('本次故障的确切形态：裸 flag 紧跟 --mmproj 会被吞掉', () =
     flashAttnMode: 'bare',
     cacheTypeK: 'auto',
     cacheTypeV: 'auto',
-    jinja: false, // 关掉 jinja，且模板留空 —— 于是 --flash-attn 紧邻 --mmproj
+    jinja: false,
     chatTemplate: '',
     mmproj: '/m/mmproj.gguf',
     mmap: true,
@@ -279,11 +333,17 @@ test('本次故障的确切形态：裸 flag 紧跟 --mmproj 会被吞掉', () =
     apiKey: '',
     extraArgs: '',
   })
+  // 断言的是「裸 flag 后面紧跟另一个 flag」这个**形态**，而不是具体是哪个 flag ——
+  // 采样参数加入后紧随其后的是 --temp，不再恰好是 --mmproj，但故障成因一模一样。
   const index = built.args.indexOf('--flash-attn')
-  assert.equal(built.args[index + 1], '--mmproj', '复现出「裸 flag 后紧邻另一个 flag」的排布')
+  const next = built.args[index + 1]
+  assert.ok(
+    typeof next === 'string' && next.startsWith('--'),
+    `复现出「裸 flag 后紧邻另一个 flag」的排布（实际紧随其后的是 ${next}）`,
+  )
 
   // 正确行为：识别出带值构建后，值补齐，后面的参数不再被吞
-  const fixed = buildLlamaServerArgs({
+  const fixed = buildArgs({
     modelPath: 'm.gguf',
     host: 'h',
     port: 1,
@@ -322,7 +382,7 @@ test('识别「--flash-attn 形状不对」这类错误（用于自动重试）'
 
 test('参数校验：能挑出构建不认识的选项', () => {
   const { flags } = parseHelp(REAL_HELP)
-  const built = buildLlamaServerArgs({
+  const built = buildArgs({
     modelPath: 'm.gguf',
     host: 'h',
     port: 1,
@@ -343,6 +403,9 @@ test('参数校验：能挑出构建不认识的选项', () => {
     mlock: true,
     apiKey: 'k',
     extraArgs: '',
+    // 用真实 --help 解析出的集合当 knownFlags：既验证「我们下发的构建都认识」，
+    // 顺带验证门控逻辑在真实集合下不会漏出去不认识的选项。
+    knownFlags: flags,
   })
   assert.deepEqual(unknownFlags(built.usedFlags, flags), [], '我们下发的选项构建都认识')
 
@@ -395,7 +458,7 @@ test('gpuLayersArgs: custom + 负数 → 表示「全部」，按构建能力选
 })
 
 test('buildLlamaServerArgs: 默认 gpuLayersMode=auto 时不下发具体数字', () => {
-  const { args } = buildLlamaServerArgs({
+  const { args } = buildArgs({
     modelPath: 'm.gguf',
     host: 'h',
     port: 1,
@@ -461,7 +524,7 @@ const kvBaseInput = {
 }
 
 test('KV cache：未传字段时默认下发 q8_0（关键保护：防止默认 f16 OOM）', () => {
-  const { args } = buildLlamaServerArgs(kvBaseInput)
+  const { args } = buildArgs(kvBaseInput)
   const kIdx = args.indexOf('--cache-type-k')
   const vIdx = args.indexOf('--cache-type-v')
   assert.equal(args[kIdx + 1], 'q8_0', '未传 cacheTypeK 时必须默认 q8_0')
@@ -469,13 +532,13 @@ test('KV cache：未传字段时默认下发 q8_0（关键保护：防止默认 
 })
 
 test('KV cache：auto 永远不下发（让 llama.cpp 用其默认）', () => {
-  const { args } = buildLlamaServerArgs({ ...kvBaseInput, cacheTypeK: 'auto', cacheTypeV: 'auto' })
+  const { args } = buildArgs({ ...kvBaseInput, cacheTypeK: 'auto', cacheTypeV: 'auto' })
   assert.ok(!args.includes('--cache-type-k'), 'cacheTypeK=auto 时不下发')
   assert.ok(!args.includes('--cache-type-v'), 'cacheTypeV=auto 时不下发')
 })
 
 test('KV cache：K 和 V 独立配置', () => {
-  const { args } = buildLlamaServerArgs({ ...kvBaseInput, cacheTypeK: 'f16', cacheTypeV: 'q4_0' })
+  const { args } = buildArgs({ ...kvBaseInput, cacheTypeK: 'f16', cacheTypeV: 'q4_0' })
   const kIdx = args.indexOf('--cache-type-k')
   const vIdx = args.indexOf('--cache-type-v')
   assert.equal(args[kIdx + 1], 'f16')
@@ -483,7 +546,7 @@ test('KV cache：K 和 V 独立配置', () => {
 })
 
 test('KV cache：非法字符串值被兜底为 q8_0 仍会下发（绝不回落到 f16）', () => {
-  const { args } = buildLlamaServerArgs({ ...kvBaseInput, cacheTypeK: 'bogus', cacheTypeV: undefined })
+  const { args } = buildArgs({ ...kvBaseInput, cacheTypeK: 'bogus', cacheTypeV: undefined })
   const kIdx = args.indexOf('--cache-type-k')
   assert.equal(args[kIdx + 1], 'q8_0', '非法值兜底成 q8_0 而不是 auto / f16')
   const vIdx = args.indexOf('--cache-type-v')
@@ -676,14 +739,14 @@ const flagIndex = (args, flag) => args.indexOf(flag)
 const flagValue = (args, flag) => (args.includes(flag) ? args[flagIndex(args, flag) + 1] : undefined)
 
 test('默认关闭：不下发 --spec-type，--mmproj 照旧（老部署行为一字不变）', () => {
-  const built = buildLlamaServerArgs(mtpBaseInput)
+  const built = buildArgs(mtpBaseInput)
   assert.equal(flagIndex(built.args, '--spec-type'), -1, '默认必须是关的')
   assert.equal(flagValue(built.args, '--mmproj'), '/m/mmproj-a.gguf', '没开 MTP 时视觉投影照旧下发')
   assert.deepEqual(built.notices, [], '没开 MTP 就不该多出任何提示')
 })
 
 test('开启 MTP：下发 --spec-type draft-mtp', () => {
-  const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp: true })
+  const built = buildArgs({ ...mtpBaseInput, mtp: true })
   assert.equal(flagValue(built.args, '--spec-type'), 'draft-mtp')
   assert.ok(
     built.usedFlags.includes('--spec-type'),
@@ -692,20 +755,20 @@ test('开启 MTP：下发 --spec-type draft-mtp', () => {
 })
 
 test('互斥：开了 MTP 时 --mmproj 绝不下发（同时给会让加载直接失败）', () => {
-  const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp: true })
+  const built = buildArgs({ ...mtpBaseInput, mtp: true })
   assert.equal(flagIndex(built.args, '--mmproj'), -1, 'MTP 与图像输入不能共存')
   assert.equal(built.args.includes('/m/mmproj-a.gguf'), false, '连值都不能残留在命令行里')
 })
 
 test('互斥不静默：notices 说清视觉投影为什么没了', () => {
-  const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp: true })
+  const built = buildArgs({ ...mtpBaseInput, mtp: true })
   assert.equal(built.notices.length, 1)
   assert.ok(built.notices[0].includes('MTP'), '要点明是 MTP 造成的')
   assert.ok(built.notices[0].includes('--mmproj'), '要点明被丢掉的是哪个参数')
 })
 
 test('本来就没有 mmproj：不刷无意义的「已忽略」提示', () => {
-  const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp: true, mmproj: '' })
+  const built = buildArgs({ ...mtpBaseInput, mtp: true, mmproj: '' })
   assert.equal(flagValue(built.args, '--spec-type'), 'draft-mtp', 'MTP 本身照常开')
   assert.deepEqual(built.notices, [], '没有东西被丢，就不该有提示')
 })
@@ -730,7 +793,7 @@ test('显示值与命令行下发值严格一致（防面板与实参错位）',
       autoMmproj: '/m/mmproj-a.gguf',
       mtp,
     })
-    const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp, mmproj: shown })
+    const built = buildArgs({ ...mtpBaseInput, mtp, mmproj: shown })
     assert.equal(flagValue(built.args, '--mmproj') ?? '', shown, `mtp=${mtp} 时面板显示与实参必须一致`)
   }
 })
@@ -746,6 +809,148 @@ test('配置：mtp 默认 false，字符串形态照样收敛（组合层不经�
 test('写入闸门认得 mtp，且 false 能落盘（否则用户在界面里关不掉）', () => {
   assert.deepEqual(sanitize({ mtp: 'true' }), { mtp: true })
   assert.deepEqual(sanitize({ mtp: false }), { mtp: false })
+})
+
+// ── 采样参数与 KV 缓存策略（本次新增的一批设置） ─────────────────────────────
+section('采样参数与 KV 缓存策略')
+
+/** 用户在需求里指定的那一组值 —— 它们会被显式下发，并覆盖 llama.cpp 自身的默认值。 */
+const SAMPLING = {
+  temp: 0.75,
+  topK: 20,
+  topP: 0.95,
+  minP: 0,
+  presencePenalty: 0,
+  repeatPenalty: 1,
+  repeatLastN: 64,
+  seed: -1,
+}
+
+test('采样参数全部显式下发（这几项的默认值与 llama.cpp 自身默认值不同）', () => {
+  const { args } = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, ...SAMPLING })
+  assert.equal(flagValue(args, '--temp'), '0.75')
+  assert.equal(flagValue(args, '--top-k'), '20')
+  assert.equal(flagValue(args, '--top-p'), '0.95')
+  assert.equal(flagValue(args, '--min-p'), '0')
+  assert.equal(flagValue(args, '--presence-penalty'), '0')
+  assert.equal(flagValue(args, '--repeat-penalty'), '1')
+  assert.equal(flagValue(args, '--repeat-last-n'), '64')
+  assert.equal(flagValue(args, '--seed'), '-1')
+})
+
+test('浮点值不会把浮点噪声带进命令行', () => {
+  assert.equal(formatNumber(0.75), '0.75')
+  assert.equal(formatNumber(0.1 + 0.2), '0.3', 'JSON 往返后的尾数噪声必须被抹掉')
+  assert.equal(formatNumber(0.95), '0.95')
+  assert.equal(formatNumber(-1), '-1')
+  assert.equal(formatNumber(4096), '4096')
+  assert.equal(formatNumber(Number.NaN), '0', '非法值兜底成 0 而不是 NaN 字样')
+})
+
+test('KV 策略：kvUnified 为真才下发；暂存量 > 0 才下发', () => {
+  const off = buildArgs({ ...kvBaseInput, ...NEW_PARAMS })
+  assert.equal(flagIndex(off.args, '--kv-unified'), -1, '默认关闭时不下发')
+  assert.equal(flagIndex(off.args, '--kv-stream-stage-mib'), -1, '0 = 不下发')
+
+  const on = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvUnified: true, kvStreamStageMib: 1024 })
+  assert.equal(flagIndex(on.args, '--kv-unified') >= 0, true, '开启后应作为裸 flag 下发')
+  assert.equal(flagValue(on.args, '--kv-stream-stage-mib'), '1024')
+})
+
+test('图像 token 预算：max < min 时自动收敛（否则 llama.cpp 拒绝启动）', () => {
+  const { args } = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, imageMinTokens: 2048, imageMaxTokens: 512 })
+  assert.equal(flagValue(args, '--image-min-tokens'), '2048')
+  assert.equal(flagValue(args, '--image-max-tokens'), '2048', 'max 必须被抬到 min，而不是原样下发')
+})
+
+test('图像 token 为 0 = 不下发该项', () => {
+  const { args } = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, imageMinTokens: 0, imageMaxTokens: 0 })
+  assert.equal(flagIndex(args, '--image-min-tokens'), -1)
+  assert.equal(flagIndex(args, '--image-max-tokens'), -1)
+})
+
+test('推理预算 0 依然下发（0 是有意义的取值：关掉思考）', () => {
+  const { args } = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, reasoningBudget: 0 })
+  assert.equal(flagValue(args, '--reasoning-budget'), '0')
+})
+
+test('门控：构建不认识的「新选项」不发，并说明被跳过了', () => {
+  const built = buildArgs({
+    ...kvBaseInput,
+    ...NEW_PARAMS,
+    kvUnified: true,
+    kvStreamStageMib: 1024,
+    imageMinTokens: 1024,
+    imageMaxTokens: 4096,
+    reasoningBudget: 4096,
+    // 老构建：--help 里没有这几个
+    knownFlags: new Set(['--jinja', '--temp', '--top-k']),
+  })
+  for (const flag of ['--kv-unified', '--kv-stream-stage-mib', '--image-min-tokens', '--image-max-tokens', '--reasoning-budget']) {
+    assert.equal(flagIndex(built.args, flag), -1, `${flag} 不该下发给不认识的构建`)
+  }
+  assert.equal(built.notices.length, 1, '必须给出说明，不能静默丢掉设置')
+  assert.ok(built.notices[0].includes('不认识'), `提示要讲清原因，实际：${built.notices[0]}`)
+  assert.equal(flagValue(built.args, '--temp'), '0', '采样参数不受门控影响，照常下发')
+})
+
+test('门控：探测失败时一律不下发（与 --flash-attn 同一取舍）', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvUnified: true, reasoningBudget: 4096, knownFlags: null })
+  assert.equal(flagIndex(built.args, '--kv-unified'), -1)
+  assert.equal(flagIndex(built.args, '--reasoning-budget'), -1)
+  assert.equal(built.notices.length, 1)
+  assert.ok(built.notices[0].includes('无法探测'), `提示应说明是探测失败，实际：${built.notices[0]}`)
+})
+
+test('配置：这 13 项的默认值就是用户指定的那一组', () => {
+  const resolved = resolveConfig(undefined, { DSH_HOME: '/tmp/dsh' })
+  assert.equal(resolved.kvUnified, false, '统一 KV 是个开关，默认关（不改变老行为）')
+  assert.equal(resolved.kvStreamStageMib, 1024)
+  assert.equal(resolved.temp, 0.75)
+  assert.equal(resolved.topK, 20)
+  assert.equal(resolved.topP, 0.95)
+  assert.equal(resolved.minP, 0)
+  assert.equal(resolved.presencePenalty, 0)
+  assert.equal(resolved.repeatPenalty, 1)
+  assert.equal(resolved.repeatLastN, 64)
+  assert.equal(resolved.seed, -1)
+  assert.equal(resolved.imageMinTokens, 1024)
+  assert.equal(resolved.imageMaxTokens, 4096)
+  assert.equal(resolved.reasoningBudget, 4096)
+})
+
+test('配置：采样参数做区间兜底，但不替用户裁决风格', () => {
+  const env = { DSH_HOME: '/tmp/dsh' }
+  assert.equal(resolveConfig({ topP: 5 }, env).topP, 1, 'top-p 超出 0~1 被收敛')
+  assert.equal(resolveConfig({ minP: -1 }, env).minP, 0)
+  assert.equal(resolveConfig({ seed: -9 }, env).seed, -1, '只认 -1 表示随机')
+  assert.equal(resolveConfig({ temp: 1.8 }, env).temp, 1.8, '合法的高温不应被改写')
+  assert.equal(resolveConfig({ kvStreamStageMib: -5 }, env).kvStreamStageMib, 0)
+})
+
+test('写入闸门认得这 13 个新字段，未知键仍然被丢弃', () => {
+  const clean = sanitize({
+    kvUnified: 'true',
+    kvStreamStageMib: '512',
+    temp: '0.6',
+    topK: 10,
+    topP: 0.9,
+    minP: 0.02,
+    presencePenalty: 0.1,
+    repeatPenalty: 1.05,
+    repeatLastN: 128,
+    seed: 42,
+    imageMinTokens: 512,
+    imageMaxTokens: 2048,
+    reasoningBudget: 2048,
+    不存在的字段: 'x',
+  })
+  assert.equal(clean.kvUnified, true)
+  assert.equal(clean.kvStreamStageMib, 512, '字符串数字必须被转成数字')
+  assert.equal(clean.temp, 0.6)
+  assert.equal(clean.seed, 42)
+  assert.equal(clean.reasoningBudget, 2048)
+  assert.equal(Object.keys(clean).length, 13, '恰好 13 项，未知键被丢弃')
 })
 
 // ── 思考开关（请求体改写） ──────────────────────────────────────────────────

@@ -11,6 +11,7 @@
 
 ## 更新日志
 
+- **0.4.0** — ① **新增 13 项设置**：KV 缓存策略 2 项（`kvUnified`、`kvStreamStageMib`，其中流式暂存是特定 llama.cpp 分支的私有参数）、采样参数 8 项（`temp` / `topK` / `topP` / `minP` / `presencePenalty` / `repeatPenalty` / `repeatLastN` / `seed`）、多模态与推理预算 3 项（`imageMinTokens` / `imageMaxTokens` / `reasoningBudget`）。这些参数现在会在每次加载时**显式下发并覆盖 llama.cpp 自身的默认值**（`temp` 0.8→0.75、`top-k` 40→20、`min-p` 0.05→0、`repeat-penalty` 1.1→1.0），设置页里逐项注明了差异。② **删除「接入 dsh」整组设置**（`routeName` / `modelAlias` / `routeModelId` / `contextWindow` / `registerRoute` / `exposeTool` / `allowModelControl`）：这 7 项改为 `configResolve.ts` 里的常量，取值沿用原默认值，**行为与默认安装完全一致但从此不可配置**。③ `maxTokens`（单次最大输出 tokens）保留，从「接入 dsh」挪进「推理参数」。④ 顺带修掉一处会静默毁掉小数设置的 bug：`clamp()` 内部有四舍五入，`temp 0.75` 会被它变成 `1`；小数项改用新的 `clampFloat()`。
 - **0.3.1** — 新增「多 Token 预测（MTP）」开关（`mtp`，**默认关闭**）。开启后加载时下发 `--spec-type draft-mtp`，用模型自带的预测头做投机解码，本地生成速度通常提升 1.2～2 倍。**开启 MTP 会自动禁用视觉投影文件（`--mmproj`）** —— 两者在 llama.cpp 里不能共存，强行一起下发会导致加载失败；这条互斥规则写在参数拼装层（`src/llama/args.ts`），只要 `mtp` 为真 `--mmproj` 就不可能漏下去，界面上对应的下拉框会立即置灰并在状态卡里说明原因。关掉 MTP 后用户选的 `mmprojFile` 不会被清空，只是暂时不生效。默认关闭，因此**升级后老部署的行为一字不变**。
 - **0.3.0** — 两项推理侧能力：① 推理参数新增「启用思考」「保留历史 think」两个开关，按 `chat_template_kwargs`（`enable_thinking` / `preserve_thinking`）在**每次请求**的请求体上下发，关闭「保留历史 think」时还会顺手剥掉历史 assistant 消息里的 `reasoning_content` / think 文本，让多轮上下文中不再堆积思考内容；② 模型与目录新增「视觉投影文件」选择项，可直接挑选 mmproj（加载时作为 `--mmproj` 下发），**留空即保持原有的「同目录自动关联」行为**。这两项开关走请求体而不是 llama-server 启动参数：旧构建只会忽略它，绝不会影响模型加载，也不必为切一次开关重启模型。
 - **0.2.3** — 发布准备：补 `repository` / `homepage` / `engines.dsh`；`peerDependencies` 从 `"*"` 改为显式的预发布分支（原来的 `*` 会静默匹配不到 harness 的 `-rc.x` 构建）；loader entry id 由裸 `local-model` 改为 `dzqjoker-local-model` 避免与其他插件撞车；去掉 `private` 与 `prepare`（产物随仓库发布，安装时不再需要构建）；补 `LICENSE`、`.gitignore`、`.gitattributes`；`PLUGIN_VERSION` 与 `package.json` 对齐。另修 `npm run verify`：它过去不读 DSH Desktop 的 `activeHome`，数据目录被搬走后会漏扫真正在用的 profile，报出「未安装本插件」的假结论。
@@ -147,7 +148,7 @@ node scripts/fetch-llama.mjs --dry-run       # 只预览要下载哪个包
   预计自动卸载时间、最近一次错误；配「重新扫描 / 立即加载 / 卸载 / 刷新状态」按钮。
 - **模型下拉框**：列出模型目录里扫到的全部 GGUF，带量化、参数量、体积、是否分片完整、是否含视觉投影。
   分片不完整的会置灰并在文案里说明。
-- **六个参数分组**：模型与目录 / 服务与端口 / 推理参数 / 加载与卸载 / 接入 dsh / 诊断与高级。
+- **六个参数分组**：模型与目录 / 服务与端口 / 推理参数 / 采样与 KV 缓存 / 加载与卸载 / 诊断与高级。
   每个字段都带中文说明，**文案与默认值直接来自 `src/config.ts` 的 schema**，字段被改过的会标「已覆盖」，
   旁边有「默认」按钮可单独恢复。
 - **目录约定**：模型目录、运行时目录、用户配置文件三个绝对路径，照着放文件即可。
@@ -191,12 +192,17 @@ schema 默认值  →  组合层（cordis.patch.yml / 部署配置）  →  <DSH
 
 | 分组 | 关键字段 |
 | --- | --- |
-| 模型与目录 | `enabled`、`selectedModel`、`mmprojFile`（视觉投影文件）、**`mtp`（多 Token 预测，开启后自动禁用视觉投影）**、`modelsDir`、`runtimeDir`、`llamaServerPath`、`preload` |
+| 模型与目录 | `enabled`、`selectedModel`、`mmprojFile`（视觉投影文件）、**`mtp`（多 Token 预测，开启后自动禁用视觉投影）**、**`imageMinTokens` / `imageMaxTokens`（每张图的 token 预算下限/上限）**、`modelsDir`、`runtimeDir`、`llamaServerPath`、`preload` |
 | 服务与端口 | `host`（默认只听回环）、`port`（默认 18080）、`llamaPort`（默认 0 = 每次自动挑空闲端口） |
-| 推理参数 | `ctxSize`、`gpuLayers`、`threads`、`batchSize`/`ubatchSize`、`flashAttention`、`jinja`、`chatTemplate`、**`enableThinking`（启用思考）**、**`preserveThinking`（保留历史 think）**、`mmap`、`mlock` |
-| 加载与卸载 | **`idleUnloadMinutes`（默认 5）**、`startupTimeoutMs`、`shutdownGraceMs`、`autoRestart`、`maxRestarts` |
-| 接入 dsh | `routeName`、`modelAlias`（固定 `local`）、`routeModelId`、`contextWindow`、`maxTokens`、`registerRoute`、`exposeTool`、`allowModelControl` |
+| 推理参数 | `ctxSize`、**`maxTokens`（单次最大输出 tokens）**、`gpuLayers`、`threads`、`batchSize`/`ubatchSize`、`flashAttention`、**`reasoningBudget`（推理 token 预算）**、`jinja`、`chatTemplate`、`enableThinking`、`preserveThinking`、`mmap`、`mlock` |
+| **采样与 KV 缓存** | **`kvUnified`（统一 KV 缓存）**、**`kvStreamStageMib`（KV 主机内存暂存 MiB）**、**`temp`、`topK`、`topP`、`minP`、`presencePenalty`、`repeatPenalty`、`repeatLastN`、`seed`** |
+| 加载与卸载 | `idleUnloadMinutes`（默认 5）、`startupTimeoutMs`、`shutdownGraceMs`、`autoRestart`、`maxRestarts` |
 | 诊断与高级 | `apiKey`、`extraArgs`、`envOverrides`、`logLevel`（排查加载问题设 `debug`） |
+
+> 原先还有一组「接入 dsh」（`routeName` / `modelAlias` / `routeModelId` / `contextWindow` /
+> `registerRoute` / `exposeTool` / `allowModelControl`）。`0.4.0` 起这一组**已从 schema 删除**，
+> 改为 `src/configResolve.ts` 里的常量（取值 = 原默认值），因此行为不变但不再可配置。
+> 详见 [第 4 节「接入 dsh 那些设置去哪了」](#接入-dsh-那些设置去哪了)。
 
 保存后模型会被卸载一次，下次对话按新参数重新加载 —— 用户刚改完设置，期望的就是这个行为。
 
@@ -227,6 +233,96 @@ schema 默认值  →  组合层（cordis.patch.yml / 部署配置）  →  <DSH
 > 另外：较新的 llama.cpp 已把 `--mlock` / `--no-mmap` 标记为 DEPRECATED（建议改用 `--load-mode`），
 > 但两者仍然可用，插件继续沿用；将来若被移除，上面的启动前警告会直接点名。
 
+### 多 Token 预测（MTP）
+
+`0.3.1` 新增，**默认关闭**。开启后加载时下发 `--spec-type draft-mtp`，让模型用它**自带的预测头**
+一次猜测并校验多个 token（投机解码），本地生成速度通常能提升 1.2～2 倍，回复越长越明显。
+
+**开启 MTP 会自动禁用视觉投影文件（`--mmproj`）** —— 这两者在 llama.cpp 里目前不能共存，强行一起下发
+会导致加载直接失败。所以这条互斥规则写在**参数拼装层**（`src/llama/args.ts` 的 `buildLlamaServerArgs`）：
+只要 `mtp` 为真，`--mmproj` 就绝不可能漏下去，无论界面上选了什么、也无论调用方传了什么。
+界面上对应的下拉框会**立即置灰**（读的是未保存的草稿值，不必先保存），状态卡则说明「视觉投影已被 MTP 顶掉」。
+关掉 MTP 后你选的 `mmprojFile` **不会被清空**，只是暂时不生效 —— 免得来回切开关时丢配置。
+
+| 事实 | 说明 |
+| --- | --- |
+| 开关名 | `--spec-type draft-mtp`（不是 `-mtp` / `--spec mtp`，那两个是早期写法的残留，已被标准化掉） |
+| 需要草稿模型吗 | 不需要。MTP 用的是模型自带的预测头，这是它比传统投机解码省事的地方 |
+| llama.cpp 版本 | 需要 2026-05 之后的构建（PR #22673 合并了 MTP 支持） |
+| 模型要求 | 必须是**带 MTP 头的 GGUF**（文件名常带 `MTP` 字样）。普通 GGUF 打开这个开关**零效果且不报错** |
+| 与图像输入 | **互斥**。开了 MTP 就不能下发 `--mmproj` |
+| 草稿深度 | `--spec-draft-n-max`（llama.cpp 默认 16，社区推荐 2~3，太大反而更慢）。插件**不下发**这个值，需要时用「附加参数」 |
+
+> 最容易踩的坑是第 4 条：**普通 GGUF 打开开关不会有任何加速，而且不报错**。如果你开了 MTP 却感觉没变快，
+> 先确认模型文件名里有没有 `MTP` 字样，再看 llama.cpp 的构建日期。
+
+### 采样参数与 KV 缓存策略（0.4.0 新增）
+
+这一组**每次加载都会显式下发**，因此会**覆盖 llama.cpp 自身的默认值**。差异也逐项写在设置页的说明里，
+这里汇总成表：
+
+| 参数 | 插件默认 | llama.cpp 默认 | 说明 |
+| --- | --- | --- | --- |
+| `--temp` | 0.75 | 0.80 | 温度：越高越随机 |
+| `--top-k` | 20 | 40 | 只从概率最高的 K 个 token 里采样；0 = 不过滤 |
+| `--top-p` | 0.95 | 0.95 | 核采样阈值（一致） |
+| `--min-p` | 0.0 | 0.05 | 0 = 关掉最小概率过滤 |
+| `--presence-penalty` | 0.0 | 0.0 | 存在惩罚（一致） |
+| `--repeat-penalty` | 1.0 | 1.10 | 1.0 = 不做重复惩罚 |
+| `--repeat-last-n` | 64 | 64 | 检查最近多少个 token（一致） |
+| `--seed` | -1 | -1 | -1 = 每次启动都用随机种子（一致） |
+
+**所以升级到 0.4.0 之后生成风格会变**：更确定（temp 更低）、候选更窄（top-k 减半）、
+不再惩罚重复、关掉了 min-p 过滤。想退回原样，把上表右列的值填回设置页即可。
+
+KV 两项用于长上下文：
+
+| 参数 | 插件默认 | 作用 |
+| --- | --- | --- |
+| `--kv-unified` | 关闭 | 用一整块统一缓冲管理 KV 缓存，减少「按层分配」造成的显存碎片，长上下文更容易装下。代价是这块缓冲在加载时就按**完整上下文**预留 —— 即使很少跑满也占着显存 |
+| `--kv-stream-stage-mib` | 1024 | 把这么多 MiB 的 KV 缓存暂存到主机内存，以减轻显存压力。0 = 不下发。**这是「自适应 KV 流式」那个 llama.cpp 分支的私有参数**，上游构建不认识它 |
+
+图像两项（`--image-min-tokens` / `--image-max-tokens`）只对**动态分辨率**的视觉模型生效，且要先挂上视觉投影文件；
+`max` 小于 `min` 时插件会就地把它抬到 `min`（否则 llama.cpp 拒绝启动）。
+`--reasoning-budget` 限制思考链的最大长度，0 = 关掉思考、-1 = 不限。
+
+### 新参数不会把你的老构建搞崩
+
+`--kv-unified`、`--kv-stream-stage-mib`、`--image-*-tokens`、`--reasoning-budget` 都比较新，
+其中流式暂存更是特定分支独有。而**不认识的选项会让 llama-server 直接启动失败** ——
+那等于「加了个开关，插件反而起不来了」。
+
+所以插件在起进程前先跑一次 `llama-server --help`（本节开头介绍过这套探测），并且**只下发构建承认的选项**：
+
+- 构建不认识 → 跳过该选项，日志里写明被跳过的是哪些，**不影响加载**；
+- 探测失败（`--help` 拿不到）→ 同样全部跳过，与 `--flash-attn` 的取舍一致：宁可退回构建默认值，也不赌它认；
+- 采样参数（`--temp` 那一组）**不受门控** —— 它们在几乎所有版本里都存在，门控只会让一次探测失败
+  就把你的采样设置全丢掉。
+
+> 想知道你的 llama.cpp 认哪些选项、插件实际会下发什么？跑 `npm run verify:llama`：
+> 它用你的实际配置拼出完整命令行（模型换成不存在的哨兵路径，不占显存），真的起一次 llama-server 并报告结论。
+
+### 「接入 dsh」那些设置去哪了
+
+`0.4.0` 按用户要求删掉了整组「接入 dsh」设置。它们**改成了常量**（`src/configResolve.ts`），
+取值就是原来的默认值：
+
+| 原设置 | 现在的常量 | 影响 |
+| --- | --- | --- |
+| `routeName` | `local-llama` | 路由名固定，dsh 侧 `settings.yaml` 不用改 |
+| `modelAlias` / `routeModelId` | `local` | `--alias` 与模型选择器里的 id 固定 |
+| `contextWindow` | **跟随 `ctxSize`** | 见下 |
+| `registerRoute` | 恒为真 | 始终尝试注册路由；宿主没接口时照旧降级为打印可粘贴的 YAML |
+| `exposeTool` | 恒为真 | `local_model` 工具照旧注册 |
+| `allowModelControl` | 恒为假 | **能力取舍**：`local_model` 的 `start` / `stop` 从此恒被拒绝，无法再打开 |
+
+`contextWindow` 是唯一一个**取值发生变化**的：它过去独立可配（默认 32768），而 `ctxSize` 默认 8192 ——
+两者不一致正是插件一直警告的「声明比实际大 → 长会话中途崩」。现在声明的窗口直接取 `ctxSize`，
+两者同源、不可能再错位，启动后的对账警告也因此更准。
+
+> 副作用提醒：`local_model` 工具的 `start` / `stop` 动作现在恒被拒绝（这本是原默认行为，
+> 但过去能用 `allowModelControl` 打开）。要恢复可控，得改 `src/configResolve.ts` 里的常量。
+
 ## 5. 接入模型路由
 
 插件启动时会尝试把本地端点注册进 dsh 的 llm 缝。**注册成功**（日志里能看到
@@ -246,9 +342,14 @@ llm-pi-ai:
       streamIdleTimeoutMs: 600000      # 本地/CPU 推理慢，这个必须放宽
       models:
         - id: local
-          contextWindow: 32768
+          contextWindow: 8192          # 跟随「设置 → 上下文长度」，改 ctxSize 时这里也要跟着改
           maxTokens: 8192
 ```
+
+> `0.4.0` 起 `local-llama` 与 `local` 这两个名字、以及 `contextWindow = ctxSize` 的规则都是**固定的**
+> （原 `routeName` / `modelAlias` / `routeModelId` / `contextWindow` 设置已删除）。
+> 手写配置时照抄上面的 id 即可；`contextWindow` 是唯一需要你自己跟上 `ctxSize` 的值。
+> 插件自己注册的那条路由会用 `ctxSize` 自动填这个字段，所以只有手写配置时才需要操心它。
 
 会话里也可以用 `/local-model route` 随时打印这段配置。
 
@@ -337,6 +438,11 @@ disabled ──启用──▶ idle ──首条对话──▶ starting ──�
 | 开了 MTP，但生成速度没有任何变化 | 两条前提没同时满足：① 模型必须是**带 MTP 头的 GGUF**（文件名常带 `MTP` 字样），普通 GGUF 打开开关**零效果且不报错**；② llama.cpp 构建要支持 MTP（2026-05 之后的 PR #22673）。先看模型文件名，再看构建日期。另外草稿深度用默认值即可，调得过大反而更慢 |
 | 加载失败，日志里出现 `unknown argument: --spec-type` / `--spec-type: invalid value` | 这个 llama.cpp 构建不支持 MTP（早于 2026-05），或该构建只认别的取值。升级 llama.cpp；插件在启动前会通过 `--help` 探测并打一条「不认识这个选项」的警告，看到警告就说明是这个原因 |
 | 加载失败，同时出现 MTP 与 mmproj 相关字样 | 说明命令行里同时下发了 `--spec-type` 和 `--mmproj` —— 0.3.1 的拼装层不会产生这种组合，所以要么是你在「附加参数」里手写了其中一个、要么是旧版本。检查 **设置 → 本地模型 → 附加参数**，删掉手写的 `--mmproj` 或 `--spec-type` |
+| 升级到 0.4.0 后生成风格变了（更保守 / 更容易重复 / 候选更单调） | **这是预期内的**：新增的 8 个采样参数每次加载都会显式下发，并覆盖 llama.cpp 自身默认值 —— `temp` 0.8→0.75、`top-k` 40→20、`min-p` 0.05→0、`repeat-penalty` 1.1→1.0。想退回原样，去 **设置 → 本地模型 → 采样与 KV 缓存** 把这些值填成 llama.cpp 的默认值（见第 4 节的对照表） |
+| 设置页里找不到「路由名 / 模型别名 / 模型 ID / 声明上下文 / 自动注册路由」了 | **0.4.0 按需求删掉了整组「接入 dsh」设置**，它们变成了 `src/configResolve.ts` 里的常量（路由名 `local-llama`、id `local`，其余恒为真/假）。功能不变，只是不可配置。其中「声明上下文」现在直接跟随 `ctxSize`，见第 4 节「接入 dsh 那些设置去哪了」 |
+| 日志说「这个 llama-server 不认识以下选项，已跳过：`--kv-stream-stage-mib`…」 | 这是**预期行为**，不是故障：`--kv-unified` / `--kv-stream-stage-mib` / `--image-*-tokens` / `--reasoning-budget` 只在构建确实支持时才下发（`--kv-stream-stage-mib` 是特定分支的私有参数）。要么升级到支持它的构建，要么把这些设置留在 0（不下发），加载不受影响 |
+| `local_model` 工具的 `start` / `stop` 一直返回「不可用」 | **0.4.0 之后恒如此**：控制开关 `allowModelControl` 已删除、固定为假。要恢复可控，需把 `src/configResolve.ts` 里的 `ALLOW_MODEL_CONTROL` 改成 `true` 并重新构建 |
+| 设了 `kvStreamStageMib` 之后启动变慢 / 反而更容易 OOM | 这个值是「暂存到主机内存」的**上限**，取值取决于模型、上下文、显卡与其它显存占用，没有通用最优解。设得过大可能让主机内存吃紧。从保守值起步，逐步加大并观察启动情况与峰值显存；填 0 即完全不下发该参数 |
 | 长会话中途崩 | `contextWindow` 比 `ctxSize` 大；把两者对齐并留余量 |
 | 回复一卡一卡然后断开 | 设置页或路由里的 `streamIdleTimeoutMs` 太短（本地推理慢），参考第 5 节调到 600000 |
 | 显存没释放 | 看 `local_model` 工具或 `/local-model status` 的状态；确认 `idleUnloadMinutes` 不是 0 |
@@ -349,7 +455,7 @@ npm run build       # tsc → lib/，再打包客户端 bundle → client/client
 npm run build:client # 只重打浏览器半侧（改 client/src 后用它）
 npm run verify      # 清单自检：bundle 合法性 + 客户端半侧合规 + 在哪些 profile 装了却没生效
 npm run verify:llama # 参数验收：拿本机的 llama-server 真起一次，确认它接受插件下发的参数
-npm test            # 下面五套全跑（共 114 项：单测 74 + e2e 12 + 加载 20 + 客户端 8 + 清单 12 项检查）
+npm test            # 下面五套全跑（共 127 项：单测 85 + e2e 12 + 加载 22 + 客户端 8 + 清单 12 项检查）
 npm run test:client # 浏览器 bundle：用假 loader 真加载一遍，校验格式与插槽注册规格
 npm run test:load   # 类宿主跑 apply()：目录骨架、代理端口、设置面板数据面与安全约束
 npm run test:unit   # 参数拼装 / 能力探测 / 分片归并 / 路径与配置解析
@@ -405,7 +511,7 @@ package.json         dsh.bundle.patch → cordis.patch.yml；dsh.client → clie
 cordis.patch.yml     bundle patch：把插件行 insert 进 profile 的插件树
 src/                 宿主侧（Node）
 ├── index.ts          插件入口：name / inject / Config / apply（只用具名导出）
-├── config.ts         设置项的唯一真源（schemastery schema，43 个字段）
+├── config.ts         设置项的唯一真源（schemastery schema，50 个字段）
 ├── configResolve.ts  配置解析：路径占位符、区间收敛（无宿主依赖，可单独测）
 ├── configStore.ts    用户层配置读写 + 写入白名单/类型闸门
 ├── paths.ts          $DSH_HOME 与目录约定、首次初始化

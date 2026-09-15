@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Log } from './log.js'
 import type { LocalModelRuntime } from './lifecycle.js'
 import { formatBytes } from './registry.js'
+import { ALLOW_MODEL_CONTROL, EXPOSE_LOCAL_MODEL_TOOL } from './configResolve.js'
 
 interface ToolRegistry {
   register(tool: unknown): unknown
@@ -9,23 +10,27 @@ interface ToolRegistry {
 
 type ToolAction = 'status' | 'list' | 'start' | 'stop'
 
-/** 始终声明全部动作，是否允许启停由运行时配置决定 —— schema 只编译一次，不能随设置变。 */
+/** 始终声明全部动作，是否允许启停由常量决定 —— schema 只编译一次，不能随设置变。 */
 const ACTIONS: ToolAction[] = ['status', 'list', 'start', 'stop']
 const CONTROL_ACTIONS: ToolAction[] = ['start', 'stop']
 
 /**
  * 向模型暴露一个 `local_model` 工具。
  *
- * 设计取舍：默认只给「读」能力（status / list）。启停会直接抢占或释放显存，
- * 属于用户该拍板的资源决策，因此 start / stop 需要显式打开 allowModelControl。
+ * 设计取舍：只给「读」能力（status / list）。启停会直接抢占或释放显存，
+ * 属于用户该拍板的资源决策 —— 因此 start / stop 恒被拒绝。
+ *
+ * 这两个开关过去是设置项（exposeTool / allowModelControl），随「接入 dsh」那一组一起
+ * 从 schema 中删除，改为 config.ts 里的常量。取值沿用原默认值，所以行为与默认安装完全一致；
+ * 代价是**从此不可配置**：想在会话里让模型自己启停模型，需要改代码里的常量。
  */
 export async function registerLocalModelTool(
   ctx: Context,
   runtime: LocalModelRuntime,
   log: Log,
 ): Promise<() => void> {
-  if (!runtime.config.exposeTool) {
-    log.debug('exposeTool = false，不注册 local_model 工具')
+  if (!EXPOSE_LOCAL_MODEL_TOOL) {
+    log.debug('EXPOSE_LOCAL_MODEL_TOOL = false，不注册 local_model 工具')
     return () => undefined
   }
 
@@ -85,12 +90,13 @@ export async function registerLocalModelTool(
         return { ok: false, action: String(args?.action ?? ''), message: `action 必须是 ${ACTIONS.join(' / ')} 之一` }
       }
 
-      if (CONTROL_ACTIONS.includes(action) && !runtime.config.allowModelControl) {
+      if (CONTROL_ACTIONS.includes(action) && !ALLOW_MODEL_CONTROL) {
         return {
           ok: false,
           action,
           message:
-            '启停操作默认关闭（避免模型擅自占用/释放显存）。如需开启：Harness 设置 → 本地模型 → 允许模型控制启停。',
+            `动作 ${action} 在本插件里不可用：启停会直接抢占或释放显存，属于用户该拍板的资源决策，` +
+            '因此只允许在「设置 → 本地模型」页面手动操作。',
         }
       }
 

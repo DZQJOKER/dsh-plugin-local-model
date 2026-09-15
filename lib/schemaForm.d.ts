@@ -7,7 +7,7 @@ import type { ResolvedConfig } from './configResolve.js';
  * 加一个字段只需要改一处，界面自动出现。
  *
  * 这里只额外补两样 schema 表达不了的东西：
- *   - 分组（纯展示：把 43 个字段分成 6 组，不然一屏铺不完）；
+ *   - 分组（纯展示：把字段分成 6 组，不然一屏铺不完。字段数刻意不写死在这里 —— 它会变）；
  *   - 校验区间（界面上的 min/max 提示）。
  */
 export type FieldKind = 'boolean' | 'number' | 'string' | 'select' | 'text';

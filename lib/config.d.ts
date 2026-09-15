@@ -42,6 +42,37 @@ export interface LocalModelConfig {
     cacheTypeK: 'auto' | 'f16' | 'q8_0' | 'q4_0' | 'q4_1' | 'q5_0' | 'q5_1' | 'bf16' | 'f32' | 'iq4_nl';
     /** V 缓冲的量化精度。默认与 K 同步。 */
     cacheTypeV: 'auto' | 'f16' | 'q8_0' | 'q4_0' | 'q4_1' | 'q5_0' | 'q5_1' | 'bf16' | 'f32' | 'iq4_nl';
+    /** 统一的 KV 缓存管理策略（--kv-unified）。默认关闭 = 不下发，交给 llama.cpp 决定。 */
+    kvUnified: boolean;
+    /**
+     * 把这么多 MiB 的 KV 缓存暂存到主机内存，以减轻显存压力（--kv-stream-stage-mib）。
+     *
+     * **这是特定 llama.cpp 分支（自适应 KV 流式）的私有参数**，上游构建不认识它 ——
+     * 插件因此按 `--help` 探测结果决定是否下发，不认识的构建上会被跳过。0 = 不下发。
+     */
+    kvStreamStageMib: number;
+    /** 温度（--temp）。越高越随机。llama.cpp 自身默认 0.8。 */
+    temp: number;
+    /** 仅从概率最高的 K 个 token 中采样（--top-k）。0 = 不过滤。llama.cpp 自身默认 40。 */
+    topK: number;
+    /** 核采样阈值（--top-p）：累计概率达到该比例的 token 集合。llama.cpp 自身默认 0.95。 */
+    topP: number;
+    /** 最小概率阈值（--min-p）：低于「最佳 token 概率 × 该值」的 token 被过滤。0 = 不过滤。llama.cpp 自身默认 0.05。 */
+    minP: number;
+    /** 存在惩罚（--presence-penalty）。正值鼓励谈论新话题。 */
+    presencePenalty: number;
+    /** 重复惩罚（--repeat-penalty）。1.0 = 不惩罚。llama.cpp 自身默认 1.1。 */
+    repeatPenalty: number;
+    /** 重复惩罚检查的 token 范围（--repeat-last-n）。 */
+    repeatLastN: number;
+    /** 随机种子（--seed）。-1 = 每次启动都用随机种子。 */
+    seed: number;
+    /** 每张图最少编码成多少 token（--image-min-tokens）。只对动态分辨率的视觉模型生效。 */
+    imageMinTokens: number;
+    /** 每张图最多编码成多少 token（--image-max-tokens）。只对动态分辨率的视觉模型生效。 */
+    imageMaxTokens: number;
+    /** 推理过程的 token 预算（--reasoning-budget），限制思考链最大长度。 */
+    reasoningBudget: number;
     jinja: boolean;
     chatTemplate: string;
     /** 是否让模型输出思考内容（chat_template_kwargs.enable_thinking）。 */
@@ -58,17 +89,15 @@ export interface LocalModelConfig {
     shutdownGraceMs: number;
     autoRestart: boolean;
     maxRestarts: number;
-    routeName: string;
-    modelAlias: string;
-    routeModelId: string;
-    contextWindow: number;
+    /**
+     * dsh 侧路由声明的单次最大输出 tokens。
+     *
+     * 这是「接入 dsh」那一组里唯一保留的设置项（其余已按用户要求从 schema 中删除，
+     * 改为硬编码常量），因此它在设置页里被归入「推理参数」分组。
+     */
     maxTokens: number;
-    registerRoute: boolean;
-    exposeTool: boolean;
-    allowModelControl: boolean;
     logLevel: 'silent' | 'error' | 'warn' | 'info' | 'debug';
 }
-export declare const DEFAULT_MODEL_ALIAS = "local";
 export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     enabled: boolean;
     modelsDir: string;
@@ -82,6 +111,7 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     port: number;
     llamaPort: number;
     ctxSize: number;
+    maxTokens: number;
     gpuLayers: number;
     gpuLayersMode: "auto" | "all" | "custom";
     threads: number;
@@ -91,6 +121,19 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     flashAttention: "auto" | "on" | "off";
     cacheTypeK: "auto" | "f16" | "q8_0" | "q4_0" | "q4_1" | "q5_0" | "q5_1" | "bf16" | "f32" | "iq4_nl";
     cacheTypeV: "auto" | "f16" | "q8_0" | "q4_0" | "q4_1" | "q5_0" | "q5_1" | "bf16" | "f32" | "iq4_nl";
+    kvUnified: boolean;
+    kvStreamStageMib: number;
+    temp: number;
+    topK: number;
+    topP: number;
+    minP: number;
+    presencePenalty: number;
+    repeatPenalty: number;
+    repeatLastN: number;
+    seed: number;
+    imageMinTokens: number;
+    imageMaxTokens: number;
+    reasoningBudget: number;
     jinja: boolean;
     chatTemplate: string;
     enableThinking: boolean;
@@ -105,13 +148,5 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     shutdownGraceMs: number;
     autoRestart: boolean;
     maxRestarts: number;
-    routeName: string;
-    modelAlias: string;
-    routeModelId: string;
-    contextWindow: number;
-    maxTokens: number;
-    registerRoute: boolean;
-    exposeTool: boolean;
-    allowModelControl: boolean;
     logLevel: "silent" | "error" | "warn" | "info" | "debug";
 }>;

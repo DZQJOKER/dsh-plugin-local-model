@@ -6,6 +6,24 @@ export interface ResolvedConfig extends LocalModelConfig {
     /** 空闲卸载毫秒数，0 表示关闭。 */
     idleUnloadMs: number;
 }
+/** llama-server 对外暴露的模型别名（--alias），同时用于路由展示名。 */
+export declare const DEFAULT_MODEL_ALIAS = "local";
+/** 本地路由在 dsh 侧注册用的路由名（pi-ai provider 的 key）。 */
+export declare const LOCAL_ROUTE_NAME = "local-llama";
+/** dsh 模型选择器里的模型 id。 */
+export declare const LOCAL_MODEL_ID = "local";
+/**
+ * local_model 工具是否暴露给模型（原 `exposeTool` 设置）。
+ * 保留原默认值 true：设置页不再提供开关，行为与默认安装一致。
+ */
+export declare const EXPOSE_LOCAL_MODEL_TOOL = true;
+/**
+ * 是否允许模型通过 local_model 工具启停模型（原 `allowModelControl` 设置）。
+ *
+ * 保留原默认值 false：装载/卸载显存属于用户该拍板的资源决策。
+ * 注意这是**能力上的取舍** —— 设置项被删除后，这一条从此不可配置。
+ */
+export declare const ALLOW_MODEL_CONTROL = false;
 /**
  * 这一层刻意不 import schemastery。
  *
@@ -16,6 +34,14 @@ export interface ResolvedConfig extends LocalModelConfig {
  */
 export declare function defaultConfig(): LocalModelConfig;
 export declare function clamp(value: number, min: number, max: number, fallback: number): number;
+/**
+ * 小数版 clamp：**不取整**。
+ *
+ * 为什么必须单独有一个：`clamp()` 里的 `Math.round` 对整数参数是对的，但用在采样参数上
+ * 会静默毁掉它们 —— `temp 0.75 → 1`、`top-p 0.95 → 1`、`min-p 0.05 → 0`，
+ * 而且没有任何报错，只会表现为「设了没反应」。
+ */
+export declare function clampFloat(value: number, min: number, max: number, fallback: number): number;
 /**
  * 布尔收敛：只有明确的「假」才判为关闭，其余无法识别的值一律回落到 fallback。
  *

@@ -16,6 +16,14 @@ export interface RouteSpec {
     /** 流式空闲超时。本地模型吐字慢，必须比云端宽松得多。 */
     streamIdleTimeoutMs: number;
 }
+/**
+ * 组装路由描述。
+ *
+ * 注意哪些值来自常量：路由名、模型 id、别名都曾是设置项，现已按用户要求从 schema 删除、
+ * 改为常量 —— 这三个值本来就不该随每次配置漂移，dsh 侧的 settings.yaml 引用的是它们。
+ * `contextWindow` 则取 `ctxSize`（不再是独立设置），这样「dsh 声明的窗口」与
+ * 「llama.cpp 的 -c」同源，不可能出现声明比实际大、长会话中途崩的情况。
+ */
 export declare function buildRouteSpec(config: ResolvedConfig, baseURL: string): RouteSpec;
 /** 生成 pi-ai 路由 profile（对应 settings.yaml 里 llm-pi-ai.providers.<route>）。 */
 export declare function buildRouteProfile(spec: RouteSpec): Record<string, unknown>;

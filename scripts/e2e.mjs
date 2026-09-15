@@ -23,6 +23,9 @@ import { fileURLToPath } from 'node:url'
 import { LocalModelRuntime, shouldUnload } from '../lib/lifecycle.js'
 import { LocalModelProxy } from '../lib/proxy.js'
 import { resolveConfig } from '../lib/configResolve.js'
+// 路由名/模型别名/id 过去是设置项，已从 schema 删除、改为常量 —— 测试也跟着取常量，
+// 免得再写成 config.xxx 拿到 undefined 却只表现为「某个断言莫名失败」。
+import { DEFAULT_MODEL_ALIAS, LOCAL_MODEL_ID } from '../lib/configResolve.js'
 import { isProcessAlive, isPortFree, LlamaServer } from '../lib/llama/runner.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -118,7 +121,7 @@ async function buildRuntime(overrides = {}) {
       spawns.push(port)
       return new LlamaServer({
         command: process.execPath,
-        args: [executable, '--host', cfg.host, '--port', String(port), '--alias', cfg.modelAlias],
+        args: [executable, '--host', cfg.host, '--port', String(port), '--alias', DEFAULT_MODEL_ALIAS],
         cwd: here,
         env: { ...process.env, FAKE_LOAD_MS: '300' },
         pidFile: cfg.paths.pidFile,
@@ -136,8 +139,8 @@ async function buildRuntime(overrides = {}) {
     onRequestStart: () => runtime.beginRequest(),
     onRequestEnd: () => runtime.endRequest(),
     status: () => runtime.status(),
-    modelId: () => config.routeModelId,
-    modelDisplayName: () => runtime.status().model?.displayName ?? config.routeModelId,
+    modelId: () => LOCAL_MODEL_ID,
+    modelDisplayName: () => runtime.status().model?.displayName ?? LOCAL_MODEL_ID,
     apiKey: () => config.apiKey,
     // 生产里由 index.ts 注入；这里按配置取，才能验证「改写后的请求体真的到了上游」。
     thinkPolicy: () => ({ enableThinking: config.enableThinking, preserveThinking: config.preserveThinking }),
@@ -182,7 +185,7 @@ await step('首条对话：自动拉起 → 等待就绪 → 原样转发', asyn
     const started = Date.now()
     const res = await request(`${ctx.proxy.origin}/v1/chat/completions`, {
       method: 'POST',
-      body: { model: ctx.config.routeModelId, messages: [{ role: 'user', content: 'hi' }] },
+      body: { model: LOCAL_MODEL_ID, messages: [{ role: 'user', content: 'hi' }] },
     })
     const elapsed = Date.now() - started
 

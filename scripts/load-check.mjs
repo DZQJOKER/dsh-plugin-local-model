@@ -367,6 +367,70 @@ await step('设置页数据面：新增字段出现在正确的分组、类型�
   assert.ok(Array.isArray(state.visionFiles), 'state 必须带上视觉投影文件清单（下拉框的数据源）')
 })
 
+await step('设置页数据面：「接入 dsh」那一组已从表单消失，maxTokens 挪进「推理参数」', async () => {
+  const res = await callBridge({ path: '/api/local-model/state' })
+  const state = JSON.parse(res.body)
+  const all = state.form.groups.flatMap((g) => g.fields)
+  const keys = all.map((f) => f.key)
+  const groupId = (key) => state.form.groups.find((g) => g.fields.some((f) => f.key === key))?.id
+
+  for (const gone of ['routeName', 'modelAlias', 'routeModelId', 'contextWindow', 'registerRoute', 'exposeTool', 'allowModelControl']) {
+    assert.equal(keys.includes(gone), false, `${gone} 必须已从 schema 删除（用户明确要求删掉那一组）`)
+    assert.equal(state.config[gone], undefined, `${gone} 也不该再出现在运行时配置里`)
+  }
+  assert.equal(
+    state.form.groups.some((g) => g.id === 'route'),
+    false,
+    '空分组不该留在表单里（buildFormDescriptor 会过滤空组）',
+  )
+
+  // 唯一被保留的那一项：搬进「推理参数」，标签也改成用户认得的叫法。
+  assert.equal(keys.includes('maxTokens'), true, 'maxTokens 必须保留')
+  assert.equal(groupId('maxTokens'), 'infer')
+  assert.equal(all.find((f) => f.key === 'maxTokens').label, '单次最大输出 tokens')
+
+  // 删掉的是设置，不是能力：路由相关的东西必须照旧工作。
+  assert.equal(state.config.maxTokens, 8192)
+  assert.equal(state.form.paths.configFile.endsWith('config.json'), true)
+})
+
+await step('设置页数据面：本次新增的 13 项设置都在表单里且分组正确', async () => {
+  const res = await callBridge({ path: '/api/local-model/state' })
+  const state = JSON.parse(res.body)
+  const all = state.form.groups.flatMap((g) => g.fields)
+  const find = (key) => all.find((f) => f.key === key)
+  const groupId = (key) => state.form.groups.find((g) => g.fields.some((f) => f.key === key))?.id
+
+  const expect = {
+    kvUnified: ['boolean', false, 'sampling'],
+    kvStreamStageMib: ['number', 1024, 'sampling'],
+    temp: ['number', 0.75, 'sampling'],
+    topK: ['number', 20, 'sampling'],
+    topP: ['number', 0.95, 'sampling'],
+    minP: ['number', 0, 'sampling'],
+    presencePenalty: ['number', 0, 'sampling'],
+    repeatPenalty: ['number', 1, 'sampling'],
+    repeatLastN: ['number', 64, 'sampling'],
+    seed: ['number', -1, 'sampling'],
+    imageMinTokens: ['number', 1024, 'model'],
+    imageMaxTokens: ['number', 4096, 'model'],
+    reasoningBudget: ['number', 4096, 'infer'],
+  }
+
+  for (const [key, [kind, def, group]] of Object.entries(expect)) {
+    const field = find(key)
+    assert.ok(field, `${key} 必须出现在表单里`)
+    assert.equal(field.kind, kind, `${key} 的控件类型`)
+    assert.equal(field.default, def, `${key} 的默认值必须是需求里指定的值，实际 ${JSON.stringify(field.default)}`)
+    assert.equal(groupId(key), group, `${key} 必须落在「${group}」分组`)
+    assert.ok(typeof field.description === 'string' && field.description.length > 10, `${key} 必须有说明文案`)
+  }
+
+  // 小数默认值绝不能被 clamp 的四舍五入吃掉（temp 0.75 曾会变成 1）。
+  assert.equal(state.config.temp, 0.75, 'temp 必须原样是 0.75')
+  assert.equal(state.config.topP, 0.95, 'top-p 必须原样是 0.95')
+})
+
 await step('设置页数据面：三个新字段能存能读，并落盘到用户层配置', async () => {
   const res = await callBridge({
     method: 'POST',

@@ -42,6 +42,33 @@ export interface LlamaServerArgInput {
     cacheTypeK?: string;
     /** V 缓冲的量化精度；'auto' = 不下发。未传视为 q8_0。 */
     cacheTypeV?: string;
+    /** 统一的 KV 缓存管理策略（--kv-unified）。 */
+    kvUnified: boolean;
+    /** --kv-stream-stage-mib；0 = 不下发。 */
+    kvStreamStageMib: number;
+    /** 采样参数：全部按配置显式下发（它们的默认值就是用户指定的值）。 */
+    temp: number;
+    topK: number;
+    topP: number;
+    minP: number;
+    presencePenalty: number;
+    repeatPenalty: number;
+    repeatLastN: number;
+    seed: number;
+    /** 每张图的最少/最多 token 数（--image-min-tokens / --image-max-tokens）；0 = 不下发该项。 */
+    imageMinTokens: number;
+    imageMaxTokens: number;
+    /** 推理 token 预算（--reasoning-budget）。0 = 关掉思考，-1 = 不限。 */
+    reasoningBudget: number;
+    /**
+     * 这个构建在 `--help` 里公开的选项名集合。
+     *
+     * `null` = 探测失败/未知。新加入的那些只在较新构建或特定分支存在的选项
+     * （--kv-unified / --kv-stream-stage-mib / --image-*-tokens / --reasoning-budget）
+     * 只有在确认构建认得时才下发 —— 否则 llama-server 会因为未知参数**直接启动失败**，
+     * 那等于「加了个开关，插件反而起不来了」。
+     */
+    knownFlags: ReadonlySet<string> | null;
     /** --jinja：OpenAI 风格 function calling 依赖它，默认开。 */
     jinja: boolean;
     chatTemplate: string;
@@ -108,6 +135,14 @@ export declare function flashAttnArgs(setting: unknown, mode: FlashAttnMode): {
     args: string[];
     notice: string | null;
 };
+/**
+ * 把配置里的数字渲染成命令行文本。
+ *
+ * 为什么不能直接 `String(value)`：采样参数是小数，用户在界面上敲的 0.75 经 JSON 往返后
+ * 可能是 0.7500000000000001 这类浮点噪声，直接拼进命令行既难看又可能被 llama.cpp 判为非法。
+ * 统一截到 6 位有效小数再去掉尾零。
+ */
+export declare function formatNumber(value: number): string;
 export declare function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs;
 /**
  * 引号感知的参数分词：支持 'a b'、"a b"。

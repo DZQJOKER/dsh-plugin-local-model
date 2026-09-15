@@ -16,7 +16,7 @@ import { type LocalModelConfig } from './config.js';
 /** 诊断信息里显示的插件名。 */
 export declare const name = "local-model";
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export declare const PLUGIN_VERSION = "0.3.1";
+export declare const PLUGIN_VERSION = "0.4.0";
 /**
  * 硬依赖：无。
  *
@@ -39,6 +39,7 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     port: number;
     llamaPort: number;
     ctxSize: number;
+    maxTokens: number;
     gpuLayers: number;
     gpuLayersMode: "auto" | "all" | "custom";
     threads: number;
@@ -48,6 +49,19 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     flashAttention: "auto" | "on" | "off";
     cacheTypeK: "auto" | "f16" | "q8_0" | "q4_0" | "q4_1" | "q5_0" | "q5_1" | "bf16" | "f32" | "iq4_nl";
     cacheTypeV: "auto" | "f16" | "q8_0" | "q4_0" | "q4_1" | "q5_0" | "q5_1" | "bf16" | "f32" | "iq4_nl";
+    kvUnified: boolean;
+    kvStreamStageMib: number;
+    temp: number;
+    topK: number;
+    topP: number;
+    minP: number;
+    presencePenalty: number;
+    repeatPenalty: number;
+    repeatLastN: number;
+    seed: number;
+    imageMinTokens: number;
+    imageMaxTokens: number;
+    reasoningBudget: number;
     jinja: boolean;
     chatTemplate: string;
     enableThinking: boolean;
@@ -62,14 +76,6 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     shutdownGraceMs: number;
     autoRestart: boolean;
     maxRestarts: number;
-    routeName: string;
-    modelAlias: string;
-    routeModelId: string;
-    contextWindow: number;
-    maxTokens: number;
-    registerRoute: boolean;
-    exposeTool: boolean;
-    allowModelControl: boolean;
     logLevel: "silent" | "error" | "warn" | "info" | "debug";
 }>;
 export type { LocalModelConfig };

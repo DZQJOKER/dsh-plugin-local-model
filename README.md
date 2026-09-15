@@ -1,3 +1,6 @@
+![dsh-cost-meter 预览图](https://raw.github.com/DZQJOKER/dsh-plugin-local-model/main/images/仓库截图.png)
+
+
 # dsh-plugin-local-model
 
 给 **DeepSeek Harness（dsh）** 用的本地模型插件：在设置里管理本地 GGUF 模型，

@@ -156,6 +156,13 @@ export function LocalModelSection() {
       {runtimeState === 'disabled' ? (
         <div style={{ ...S.banner, ...S.hint }}>总开关已关闭：不会监听端口，也不会拉起任何进程。</div>
       ) : null}
+      {/*
+        视觉投影被 MTP 顶掉时说清楚原因。用户是「本来开了视觉投影、又开了 MTP」才走到这里，
+        界面上视觉投影变空，不给理由就只会以为是插件坏了。
+      */}
+      {state.runtime.visionDisabledByMtp ? (
+        <div style={{ ...S.banner, ...S.warn }}>{state.runtime.visionDisabledByMtp}</div>
+      ) : null}
 
       <div style={S.card}>
         <div style={S.statusRow}>
@@ -182,9 +189,16 @@ export function LocalModelSection() {
             {state.runtime.modelsFound}
           </div>
           <div>
+            <span style={S.metaLabel}>多 Token 预测：</span>
+            {state.runtime.mtp ? '已开启（--spec-type draft-mtp）' : '已关闭'}
+          </div>
+          <div>
             <span style={S.metaLabel}>视觉投影：</span>
             {state.runtime.visionProjector ? (
               <span style={S.mono}>{state.runtime.visionProjector}</span>
+            ) : state.runtime.visionDisabledByMtp ? (
+              /* 开着 MTP 时这里恒为空，别让它显示成「纯文本」—— 那是另一回事。 */
+              <span style={{ color: '#9a6209' }}>已配置，但本次被 MTP 顶掉</span>
             ) : (
               '未启用（纯文本）'
             )}
@@ -242,6 +256,8 @@ export function LocalModelSection() {
               value={valueOf(field.key)}
               models={state.models}
               visionFiles={state.visionFiles ?? []}
+              /* 读 draft：勾上 MTP 的瞬间就把视觉投影锁住，不用等保存。 */
+              mtp={valueOf('mtp') === true}
               overridden={overridden.has(field.key) && !unset.includes(field.key) && !(field.key in draft)}
               invalid={invalid.includes(field.key)}
               onChange={(raw) => setValue(field, raw)}
@@ -307,9 +323,14 @@ export function LocalModelSection() {
   )
 }
 
-function Field({ field, value, models, visionFiles, overridden, invalid, onChange, onRevert }) {
+function Field({ field, value, models, visionFiles, overridden, invalid, mtp, onChange, onRevert }) {
   const isModelPicker = field.key === 'selectedModel'
   const isVisionPicker = field.key === 'mmprojFile'
+  /**
+   * MTP 与视觉投影互斥：勾上 MTP 之后这里直接锁住，而不是等保存后才由后端顶掉。
+   * 「界面允许选、实际不下发」是最坏的一种体验 —— 用户会以为配置坏了。
+   */
+  const visionLockedByMtp = isVisionPicker && mtp === true
 
   const control = () => {
     if (isModelPicker) {
@@ -341,7 +362,12 @@ function Field({ field, value, models, visionFiles, overridden, invalid, onChang
       const missing = selected !== '' && !visionFiles.some((f) => f.id === selected)
       return (
         <>
-          <select style={S.select} value={selected} onChange={(e) => onChange(e.target.value)}>
+          <select
+            style={visionLockedByMtp ? { ...S.select, ...S.buttonDisabled } : S.select}
+            disabled={visionLockedByMtp}
+            value={selected}
+            onChange={(e) => onChange(e.target.value)}
+          >
             <option value="">（自动：同目录能唯一确定归属时自动关联）</option>
             {visionFiles.map((f) => (
               <option key={f.id} value={f.id}>
@@ -351,18 +377,25 @@ function Field({ field, value, models, visionFiles, overridden, invalid, onChang
             {/* 手改配置写了个绝对路径、或文件已被移走时，也要把当前值显示出来，别让下拉框看起来「没选」。 */}
             {missing ? <option value={selected}>{selected}（不在扫描结果里）</option> : null}
           </select>
-          {visionFiles.length === 0 ? (
+          {/* 被 MTP 顶掉时，下面那些「自动 / 文件不存在」的提示全是噪音，一概不显示。 */}
+          {visionLockedByMtp ? (
+            <div style={{ ...S.modelMeta, color: '#9a6209', opacity: 1 }}>
+              ⚠ 已开启「多 Token 预测（MTP）」：MTP 与图像输入不能共存，本次加载不会下发 --mmproj。
+              这里选的文件不会被清空，关掉 MTP 即恢复生效；需要看图请先关掉 MTP。
+            </div>
+          ) : null}
+          {!visionLockedByMtp && visionFiles.length === 0 ? (
             <div style={S.modelMeta}>
               模型目录里还没有 mmproj-*.gguf。需要图像输入时把视觉投影文件放进模型目录，再点上面的「重新扫描」；
               纯文本模型保持「自动」即可。
             </div>
           ) : null}
-          {missing ? (
+          {!visionLockedByMtp && missing ? (
             <div style={{ ...S.modelMeta, color: '#b02525', opacity: 1 }}>
               ⚠ 选中的文件已不在模型目录里（或无权限读取）。加载时会被忽略或导致 --mmproj 报错，请重新选择。
             </div>
           ) : null}
-          {!missing && selected === '' && visionFiles.length > 0 ? (
+          {!visionLockedByMtp && !missing && selected === '' && visionFiles.length > 0 ? (
             <div style={S.modelMeta}>
               当前是「自动」：只有与模型同目录、且能唯一确定归属的 mmproj 才会随模型一起加载。
             </div>

@@ -142,6 +142,8 @@ export const S = {
   banner: { fontSize: 12, lineHeight: 1.55, borderRadius: 8, padding: '8px 10px', marginBottom: 12 },
   error: { border: `1px solid ${c('--color-border-danger', 'rgba(200,40,40,0.45)')}`, color: c('--color-text-danger', '#b02525') },
   notice: { border: `1px solid ${c('--color-border-success', 'rgba(30,140,80,0.45)')}`, color: c('--color-text-success', '#1c7a48') },
+  /** 警告（橙）：与状态徽章里的 starting/stopping 同色，表示「能跑但要注意」。 */
+  warn: { border: '1px solid rgba(154,98,9,0.45)', color: '#9a6209' },
   hint: { border: `1px solid ${c('--color-border-tertiary', 'rgba(0,0,0,0.12)')}`, opacity: 0.85 },
 }
 

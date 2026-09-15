@@ -11,6 +11,7 @@
 
 ## 更新日志
 
+- **0.3.1** — 新增「多 Token 预测（MTP）」开关（`mtp`，**默认关闭**）。开启后加载时下发 `--spec-type draft-mtp`，用模型自带的预测头做投机解码，本地生成速度通常提升 1.2～2 倍。**开启 MTP 会自动禁用视觉投影文件（`--mmproj`）** —— 两者在 llama.cpp 里不能共存，强行一起下发会导致加载失败；这条互斥规则写在参数拼装层（`src/llama/args.ts`），只要 `mtp` 为真 `--mmproj` 就不可能漏下去，界面上对应的下拉框会立即置灰并在状态卡里说明原因。关掉 MTP 后用户选的 `mmprojFile` 不会被清空，只是暂时不生效。默认关闭，因此**升级后老部署的行为一字不变**。
 - **0.3.0** — 两项推理侧能力：① 推理参数新增「启用思考」「保留历史 think」两个开关，按 `chat_template_kwargs`（`enable_thinking` / `preserve_thinking`）在**每次请求**的请求体上下发，关闭「保留历史 think」时还会顺手剥掉历史 assistant 消息里的 `reasoning_content` / think 文本，让多轮上下文中不再堆积思考内容；② 模型与目录新增「视觉投影文件」选择项，可直接挑选 mmproj（加载时作为 `--mmproj` 下发），**留空即保持原有的「同目录自动关联」行为**。这两项开关走请求体而不是 llama-server 启动参数：旧构建只会忽略它，绝不会影响模型加载，也不必为切一次开关重启模型。
 - **0.2.3** — 发布准备：补 `repository` / `homepage` / `engines.dsh`；`peerDependencies` 从 `"*"` 改为显式的预发布分支（原来的 `*` 会静默匹配不到 harness 的 `-rc.x` 构建）；loader entry id 由裸 `local-model` 改为 `dzqjoker-local-model` 避免与其他插件撞车；去掉 `private` 与 `prepare`（产物随仓库发布，安装时不再需要构建）；补 `LICENSE`、`.gitignore`、`.gitattributes`；`PLUGIN_VERSION` 与 `package.json` 对齐。另修 `npm run verify`：它过去不读 DSH Desktop 的 `activeHome`，数据目录被搬走后会漏扫真正在用的 profile，报出「未安装本插件」的假结论。
 - **0.2.2** — 修复 CUDA OOM：新增 `gpuLayersMode`（auto / all / custom）。默认 `auto` 会下发 `-ngl auto`，让 llama.cpp 的 `--fit` 按可用显存自适应卸载 —— 之前默认把 `-ngl` 钉成 `-1` 跳过了这层保护，模型放不下时从「少放几层」变成「直接 OOM」。同时把失败日志翻译成可读诊断（fit-blocked-by-pinned-layers / cuda-oom / 形状不匹配 / 模型缺失 等十几种模式）。
@@ -190,7 +191,7 @@ schema 默认值  →  组合层（cordis.patch.yml / 部署配置）  →  <DSH
 
 | 分组 | 关键字段 |
 | --- | --- |
-| 模型与目录 | `enabled`、`selectedModel`、`mmprojFile`（视觉投影文件）、`modelsDir`、`runtimeDir`、`llamaServerPath`、`preload` |
+| 模型与目录 | `enabled`、`selectedModel`、`mmprojFile`（视觉投影文件）、**`mtp`（多 Token 预测，开启后自动禁用视觉投影）**、`modelsDir`、`runtimeDir`、`llamaServerPath`、`preload` |
 | 服务与端口 | `host`（默认只听回环）、`port`（默认 18080）、`llamaPort`（默认 0 = 每次自动挑空闲端口） |
 | 推理参数 | `ctxSize`、`gpuLayers`、`threads`、`batchSize`/`ubatchSize`、`flashAttention`、`jinja`、`chatTemplate`、**`enableThinking`（启用思考）**、**`preserveThinking`（保留历史 think）**、`mmap`、`mlock` |
 | 加载与卸载 | **`idleUnloadMinutes`（默认 5）**、`startupTimeoutMs`、`shutdownGraceMs`、`autoRestart`、`maxRestarts` |
@@ -332,6 +333,10 @@ disabled ──启用──▶ idle ──首条对话──▶ starting ──�
 | 模型看不到工具、不调用工具 | 检查 `jinja=true`；再试 `chatTemplate=chatml` 或指定模板文件 |
 | 切了「启用思考 / 保留历史 think」但输出没变化 | 两条前提：① llama.cpp 要支持请求体里的 `chat_template_kwargs`（2025-06 之后的构建，旧构建会忽略该字段，表现为开关无效）；② 模型模板要认 `enable_thinking` / `preserve_thinking`（带思维链的模板如 Qwen3 / Qwen3.6 才认）。`logLevel=debug` 会把「未能改写请求体」的原因打出来 |
 | 加载失败，日志里出现 `failed to load mmproj` / `clip_model_load` | 视觉投影文件与模型不配套，或路径不对。去 **设置 → 本地模型 → 视觉投影文件**，把选项恢复成「自动」让插件重新按同目录关联；纯文本模型保持「自动」即可 |
+| 开了 MTP 之后，视觉投影设置变成了灰色 / 状态卡说「视觉投影已被 MTP 顶掉」 | 这是**设计行为**，不是故障：MTP 与图像输入在 llama.cpp 里不能共存。要图像输入就关掉 MTP；要 MTP 就保持视觉投影空着。你选的 `mmprojFile` 没被清空，关掉 MTP 即恢复生效（见第 4 节「多 Token 预测（MTP）」） |
+| 开了 MTP，但生成速度没有任何变化 | 两条前提没同时满足：① 模型必须是**带 MTP 头的 GGUF**（文件名常带 `MTP` 字样），普通 GGUF 打开开关**零效果且不报错**；② llama.cpp 构建要支持 MTP（2026-05 之后的 PR #22673）。先看模型文件名，再看构建日期。另外草稿深度用默认值即可，调得过大反而更慢 |
+| 加载失败，日志里出现 `unknown argument: --spec-type` / `--spec-type: invalid value` | 这个 llama.cpp 构建不支持 MTP（早于 2026-05），或该构建只认别的取值。升级 llama.cpp；插件在启动前会通过 `--help` 探测并打一条「不认识这个选项」的警告，看到警告就说明是这个原因 |
+| 加载失败，同时出现 MTP 与 mmproj 相关字样 | 说明命令行里同时下发了 `--spec-type` 和 `--mmproj` —— 0.3.1 的拼装层不会产生这种组合，所以要么是你在「附加参数」里手写了其中一个、要么是旧版本。检查 **设置 → 本地模型 → 附加参数**，删掉手写的 `--mmproj` 或 `--spec-type` |
 | 长会话中途崩 | `contextWindow` 比 `ctxSize` 大；把两者对齐并留余量 |
 | 回复一卡一卡然后断开 | 设置页或路由里的 `streamIdleTimeoutMs` 太短（本地推理慢），参考第 5 节调到 600000 |
 | 显存没释放 | 看 `local_model` 工具或 `/local-model status` 的状态；确认 `idleUnloadMinutes` 不是 0 |
@@ -344,7 +349,7 @@ npm run build       # tsc → lib/，再打包客户端 bundle → client/client
 npm run build:client # 只重打浏览器半侧（改 client/src 后用它）
 npm run verify      # 清单自检：bundle 合法性 + 客户端半侧合规 + 在哪些 profile 装了却没生效
 npm run verify:llama # 参数验收：拿本机的 llama-server 真起一次，确认它接受插件下发的参数
-npm test            # 下面五套全跑（共 86 项：单测 39 + e2e 10 + 加载 17 + 客户端 8 + 清单 12）
+npm test            # 下面五套全跑（共 114 项：单测 74 + e2e 12 + 加载 20 + 客户端 8 + 清单 12 项检查）
 npm run test:client # 浏览器 bundle：用假 loader 真加载一遍，校验格式与插槽注册规格
 npm run test:load   # 类宿主跑 apply()：目录骨架、代理端口、设置面板数据面与安全约束
 npm run test:unit   # 参数拼装 / 能力探测 / 分片归并 / 路径与配置解析
@@ -415,7 +420,7 @@ src/                 宿主侧（Node）
 └── commands.ts       /local-model 命令（status / list / start / stop / reload / route）
 client/src/          浏览器半侧
 ├── index.jsx         注册 settings.section 一级页面 + 词条
-├── section.jsx       面板：状态、模型/视觉投影下拉、按 schema 渲染的分组表单
+├── section.jsx       面板：状态、模型/视觉投影下拉（MTP 开启时置灰）、按 schema 渲染的分组表单
 ├── api.js            同源 fetch
 └── styles.js         内联样式（不引 CSS modules，少一个加载失败面）
 scripts/

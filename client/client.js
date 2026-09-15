@@ -189,6 +189,8 @@ window.__ModuleLoader__.load({
 		  banner: { fontSize: 12, lineHeight: 1.55, borderRadius: 8, padding: "8px 10px", marginBottom: 12 },
 		  error: { border: `1px solid ${c("--color-border-danger", "rgba(200,40,40,0.45)")}`, color: c("--color-text-danger", "#b02525") },
 		  notice: { border: `1px solid ${c("--color-border-success", "rgba(30,140,80,0.45)")}`, color: c("--color-text-success", "#1c7a48") },
+		  /** 警告（橙）：与状态徽章里的 starting/stopping 同色，表示「能跑但要注意」。 */
+		  warn: { border: "1px solid rgba(154,98,9,0.45)", color: "#9a6209" },
 		  hint: { border: `1px solid ${c("--color-border-tertiary", "rgba(0,0,0,0.12)")}`, opacity: 0.85 }
 		};
 		var STATE_COLORS = {
@@ -327,6 +329,7 @@ window.__ModuleLoader__.load({
 		    error ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { ...S.banner, ...S.error }, children: error }) : null,
 		    notice ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { ...S.banner, ...S.notice }, children: notice }) : null,
 		    runtimeState === "disabled" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { ...S.banner, ...S.hint }, children: "总开关已关闭：不会监听端口，也不会拉起任何进程。" }) : null,
+		    state.runtime.visionDisabledByMtp ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { ...S.banner, ...S.warn }, children: state.runtime.visionDisabledByMtp }) : null,
 		    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: S.card, children: [
 		      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.statusRow, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { style: { ...S.badge, color: colors.fg, background: colors.bg, borderColor: colors.border }, children: [
 		        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { ...S.dot, background: colors.fg } }),
@@ -350,8 +353,15 @@ window.__ModuleLoader__.load({
 		          state.runtime.modelsFound
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.metaLabel, children: "多 Token 预测：" }),
+		          state.runtime.mtp ? "已开启（--spec-type draft-mtp）" : "已关闭"
+		        ] }),
+		        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
 		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.metaLabel, children: "视觉投影：" }),
-		          state.runtime.visionProjector ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.mono, children: state.runtime.visionProjector }) : "未启用（纯文本）"
+		          state.runtime.visionProjector ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.mono, children: state.runtime.visionProjector }) : state.runtime.visionDisabledByMtp ? (
+		            /* 开着 MTP 时这里恒为空，别让它显示成「纯文本」—— 那是另一回事。 */
+		            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { color: "#9a6209" }, children: "已配置，但本次被 MTP 顶掉" })
+		          ) : "未启用（纯文本）"
 		        ] }),
 		        isReady && state.runtime.unloadAt ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
 		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.metaLabel, children: "自动卸载：" }),
@@ -403,6 +413,7 @@ window.__ModuleLoader__.load({
 		          value: valueOf(field.key),
 		          models: state.models,
 		          visionFiles: state.visionFiles ?? [],
+		          mtp: valueOf("mtp") === true,
 		          overridden: overridden.has(field.key) && !unset.includes(field.key) && !(field.key in draft),
 		          invalid: invalid.includes(field.key),
 		          onChange: (raw) => setValue(field, raw),
@@ -468,9 +479,10 @@ window.__ModuleLoader__.load({
 		    ] })
 		  ] });
 		}
-		function Field({ field, value, models, visionFiles, overridden, invalid, onChange, onRevert }) {
+		function Field({ field, value, models, visionFiles, overridden, invalid, mtp, onChange, onRevert }) {
 		  const isModelPicker = field.key === "selectedModel";
 		  const isVisionPicker = field.key === "mmprojFile";
+		  const visionLockedByMtp = isVisionPicker && mtp === true;
 		  const control = () => {
 		    if (isModelPicker) {
 		      return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
@@ -493,21 +505,31 @@ window.__ModuleLoader__.load({
 		      const selected = typeof value === "string" ? value.trim() : "";
 		      const missing = selected !== "" && !visionFiles.some((f) => f.id === selected);
 		      return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
-		        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("select", { style: S.select, value: selected, onChange: (e) => onChange(e.target.value), children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "", children: "（自动：同目录能唯一确定归属时自动关联）" }),
-		          visionFiles.map((f) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("option", { value: f.id, children: [
-		            f.id,
-		            " · ",
-		            f.sizeText
-		          ] }, f.id)),
-		          missing ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("option", { value: selected, children: [
-		            selected,
-		            "（不在扫描结果里）"
-		          ] }) : null
-		        ] }),
-		        visionFiles.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.modelMeta, children: "模型目录里还没有 mmproj-*.gguf。需要图像输入时把视觉投影文件放进模型目录，再点上面的「重新扫描」； 纯文本模型保持「自动」即可。" }) : null,
-		        missing ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { ...S.modelMeta, color: "#b02525", opacity: 1 }, children: "⚠ 选中的文件已不在模型目录里（或无权限读取）。加载时会被忽略或导致 --mmproj 报错，请重新选择。" }) : null,
-		        !missing && selected === "" && visionFiles.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.modelMeta, children: "当前是「自动」：只有与模型同目录、且能唯一确定归属的 mmproj 才会随模型一起加载。" }) : null
+		        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+		          "select",
+		          {
+		            style: visionLockedByMtp ? { ...S.select, ...S.buttonDisabled } : S.select,
+		            disabled: visionLockedByMtp,
+		            value: selected,
+		            onChange: (e) => onChange(e.target.value),
+		            children: [
+		              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "", children: "（自动：同目录能唯一确定归属时自动关联）" }),
+		              visionFiles.map((f) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("option", { value: f.id, children: [
+		                f.id,
+		                " · ",
+		                f.sizeText
+		              ] }, f.id)),
+		              missing ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("option", { value: selected, children: [
+		                selected,
+		                "（不在扫描结果里）"
+		              ] }) : null
+		            ]
+		          }
+		        ),
+		        visionLockedByMtp ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { ...S.modelMeta, color: "#9a6209", opacity: 1 }, children: "⚠ 已开启「多 Token 预测（MTP）」：MTP 与图像输入不能共存，本次加载不会下发 --mmproj。 这里选的文件不会被清空，关掉 MTP 即恢复生效；需要看图请先关掉 MTP。" }) : null,
+		        !visionLockedByMtp && visionFiles.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.modelMeta, children: "模型目录里还没有 mmproj-*.gguf。需要图像输入时把视觉投影文件放进模型目录，再点上面的「重新扫描」； 纯文本模型保持「自动」即可。" }) : null,
+		        !visionLockedByMtp && missing ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { ...S.modelMeta, color: "#b02525", opacity: 1 }, children: "⚠ 选中的文件已不在模型目录里（或无权限读取）。加载时会被忽略或导致 --mmproj 报错，请重新选择。" }) : null,
+		        !visionLockedByMtp && !missing && selected === "" && visionFiles.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.modelMeta, children: "当前是「自动」：只有与模型同目录、且能唯一确定归属的 mmproj 才会随模型一起加载。" }) : null
 		      ] });
 		    }
 		    switch (field.kind) {

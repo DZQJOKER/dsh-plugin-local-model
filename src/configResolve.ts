@@ -25,6 +25,7 @@ export function defaultConfig(): LocalModelConfig {
     llamaServerPath: '',
     selectedModel: '',
     mmprojFile: '',
+    mtp: false,
     preload: false,
     host: '127.0.0.1',
     port: 18080,
@@ -109,6 +110,8 @@ export function resolveConfig(input: Partial<LocalModelConfig> | undefined, env:
     runtimeDir: paths.runtimeDir,
     // 视觉投影：这里只做 trim，真正的优先级（显式选择 → 自动关联）在 registry.resolveVisionProjector。
     mmprojFile: (merged.mmprojFile ?? '').trim(),
+    // MTP 与视觉投影互斥；互斥本身由 args.ts 的拼参数层强制，这里只负责把开关收敛成布尔。
+    mtp: normalizeBool(merged.mtp, defaults.mtp),
     enableThinking: normalizeBool(merged.enableThinking, defaults.enableThinking),
     preserveThinking: normalizeBool(merged.preserveThinking, defaults.preserveThinking),
     host: (merged.host || defaults.host).trim(),

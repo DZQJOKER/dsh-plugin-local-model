@@ -326,7 +326,7 @@ await step('设置页数据面：schema 里的说明文案被带到了字段上'
   assert.deepEqual(level.options, ['silent', 'error', 'warn', 'info', 'debug'])
 })
 
-await step('设置页数据面：新增的三个字段出现在正确的分组、类型与标签上', async () => {
+await step('设置页数据面：新增字段出现在正确的分组、类型与标签上', async () => {
   const res = await callBridge({ path: '/api/local-model/state' })
   const state = JSON.parse(res.body)
   const all = state.form.groups.flatMap((g) => g.fields)
@@ -353,6 +353,17 @@ await step('设置页数据面：新增的三个字段出现在正确的分组�
   assert.equal(preserve.default, true)
   assert.equal(groupId('preserveThinking'), 'infer')
 
+  const mtp = all.find((f) => f.key === 'mtp')
+  assert.ok(mtp, 'MTP 开关必须出现在表单里（否则用户根本打不开）')
+  assert.equal(mtp.kind, 'boolean', '开关必须渲染成复选框')
+  assert.equal(mtp.label, '多 Token 预测（MTP）')
+  assert.equal(mtp.default, false, '默认关闭 —— 这就是「其他功能保持不变」的落点')
+  assert.equal(groupId('mtp'), 'model', '必须落在「模型与目录」分组，紧邻它要顶掉的视觉投影文件')
+  assert.ok(
+    typeof mtp.description === 'string' && mtp.description.includes('视觉投影'),
+    '说明文案必须讲清「开 MTP 会禁用视觉投影」，否则用户不知道为什么视觉投影失效了',
+  )
+
   assert.ok(Array.isArray(state.visionFiles), 'state 必须带上视觉投影文件清单（下拉框的数据源）')
 })
 
@@ -372,6 +383,52 @@ await step('设置页数据面：三个新字段能存能读，并落盘到用�
   const onDisk = JSON.parse(fs.readFileSync(path.join(fakeHome, 'local-model', 'state', 'config.json'), 'utf8'))
   assert.equal(onDisk.values.enableThinking, false, '开关必须真的落盘，否则重启就丢了')
   assert.equal(onDisk.values.mmprojFile, 'vision/mmproj-x.gguf')
+})
+
+await step('设置页数据面：MTP 开关能存能读，并驱动「视觉投影被忽略」的提示', async () => {
+  // 造一份最小 fixture：模型 + 与它同目录的**唯一** mmproj，让「自动关联」成立 ——
+  // 不然本来就没有视觉投影，测不出「开了 MTP 把它顶掉」这件事。
+  const modelsDir = path.join(fakeHome, 'local-model', 'models')
+  fs.writeFileSync(path.join(modelsDir, 'VLM-Q4_K_M.gguf'), 'x')
+  fs.writeFileSync(path.join(modelsDir, 'mmproj-VLM-f16.gguf'), 'x')
+
+  // 必须强制重扫：模型列表有 5 秒 TTL 缓存，插件启动时目录还是空的。
+  await callBridge({
+    method: 'POST',
+    path: '/api/local-model/action',
+    contentType: 'application/json',
+    body: { action: 'scan' },
+  })
+
+  const saved = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/config',
+    contentType: 'application/json',
+    body: { values: { selectedModel: 'VLM-Q4_K_M.gguf', mtp: true, mmprojFile: '' } },
+  })
+  assert.equal(saved.statusCode, 200)
+  const state = JSON.parse(saved.body)
+  assert.equal(state.config.mtp, true, 'MTP 开关必须能存下来')
+  assert.equal(state.runtime.mtp, true, '状态里要如实反映 MTP 已开')
+  assert.equal(state.runtime.visionProjector, null, '开了 MTP 就不能再下发 --mmproj')
+  assert.ok(
+    typeof state.runtime.visionDisabledByMtp === 'string' && state.runtime.visionDisabledByMtp.includes('MTP'),
+    `本来该有视觉投影却被顶掉时必须给一句人话，实际 ${JSON.stringify(state.runtime.visionDisabledByMtp)}`,
+  )
+
+  const onDisk = JSON.parse(fs.readFileSync(path.join(fakeHome, 'local-model', 'state', 'config.json'), 'utf8'))
+  assert.equal(onDisk.values.mtp, true, 'MTP 必须真的落盘，否则重启就丢了')
+
+  // 关掉 MTP：视觉投影要自己回来，提示要消失（用户选的 mmprojFile 全程不该被清掉）。
+  const off = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/config',
+    contentType: 'application/json',
+    body: { values: { mtp: false } },
+  })
+  const back = JSON.parse(off.body)
+  assert.ok(back.runtime.visionProjector, '关掉 MTP 后视觉投影应当恢复生效')
+  assert.equal(back.runtime.visionDisabledByMtp, null, '不再被顶掉时提示必须消失')
 })
 
 await step('设置页数据面：保存配置会落盘并即时生效', async () => {
@@ -402,6 +459,7 @@ await step('设置页数据面：恢复默认会清空用户层', async () => {
   assert.equal(state.config.enableThinking, true, '新增的开关也要回到默认值')
   assert.equal(state.config.preserveThinking, true)
   assert.equal(state.config.mmprojFile, '')
+  assert.equal(state.config.mtp, false, 'MTP 也要回到默认关闭')
   assert.deepEqual(state.overridden, [])
 })
 

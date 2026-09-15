@@ -2,7 +2,15 @@ import { existsSync } from 'node:fs'
 
 import type { Log } from './log.js'
 import type { ResolvedConfig } from './configResolve.js'
-import { scanModelsDetailed, pickModel, formatBytes, resolveVisionProjector, type LocalModelEntry, type ModelShard } from './registry.js'
+import {
+  scanModelsDetailed,
+  pickModel,
+  formatBytes,
+  effectiveVisionProjector,
+  resolveVisionProjector,
+  type LocalModelEntry,
+  type ModelShard,
+} from './registry.js'
 import { ensureReadme } from './paths.js'
 import { buildLlamaServerArgs, DEFAULT_ALIAS } from './llama/args.js'
 import { describeSearchScope, locateLlamaServer } from './llama/detect.js'
@@ -64,6 +72,15 @@ export interface RuntimeStatus {
   runtimeDir: string
   /** 本次加载会下发给 llama-server 的 --mmproj（绝对路径）；无视觉能力时为 null。 */
   visionProjector: string | null
+  /** 多 Token 预测（MTP）当前是否开启。 */
+  mtp: boolean
+  /**
+   * 视觉投影**因为开了 MTP 而被顶掉**时的说明（一句人话）；不是这种情况时为 null。
+   *
+   * 与 visionProjector 的区别：后者只说「最终下发什么」，这里回答「为什么本来该有的没了」——
+   * 用户开了 MTP 之后看到视觉投影变空，不给理由的话只会以为是插件坏了。
+   */
+  visionDisabledByMtp: string | null
 }
 
 /** 插件向生命周期层注入的代理句柄，避免 lifecycle 直接依赖 http 实现。 */
@@ -165,8 +182,15 @@ export function defaultServerLauncher(input: LaunchInput): LlamaServerLike {
     cacheTypeV: config.cacheTypeV,
     jinja: config.jinja,
     chatTemplate: config.chatTemplate,
-    // 显式选择的 mmproj 优先；留空时仍是模型同目录自动关联的结果（原有行为不变）。
-    mmproj: resolveVisionProjector(config.modelsDir, config.mmprojFile, entry.mmproj),
+    // 视觉投影的实际取值与状态面板共用 effectiveVisionProjector —— 开 MTP 时这里拿到空串，
+    // 因为 MTP 与图像输入不能共存（互斥的权威落点仍在 args.ts 的拼参数层）。
+    mmproj: effectiveVisionProjector({
+      modelsDir: config.modelsDir,
+      mmprojFile: config.mmprojFile,
+      autoMmproj: entry.mmproj,
+      mtp: config.mtp,
+    }),
+    mtp: config.mtp,
     mmap: config.mmap,
     mlock: config.mlock,
     apiKey: config.apiKey,
@@ -432,8 +456,30 @@ export class LocalModelRuntime {
    */
   effectiveVisionProjector(entry: LocalModelEntry | null = pickModel(this.models, this.selectedModelId)): string | null {
     if (!entry) return null
-    const resolved = resolveVisionProjector(this.config.modelsDir, this.config.mmprojFile, entry.mmproj)
+    const resolved = effectiveVisionProjector({
+      modelsDir: this.config.modelsDir,
+      mmprojFile: this.config.mmprojFile,
+      autoMmproj: entry.mmproj,
+      mtp: this.config.mtp,
+    })
     return resolved.length > 0 ? resolved : null
+  }
+
+  /**
+   * 「视觉投影被 MTP 顶掉了」时给一句人话，其余情况返回 null。
+   *
+   * 判据刻意用 resolveVisionProjector（**不含** MTP 互斥）而不是 effectiveVisionProjector：
+   * 问的是「本来会不会有视觉投影」，而不是「最终下发什么」—— 后者在开了 MTP 时恒为空，
+   * 拿它判断等于永远拿不到答案。
+   */
+  private visionDisabledByMtp(entry: LocalModelEntry): string | null {
+    if (!this.config.mtp) return null
+    const wouldBe = resolveVisionProjector(this.config.modelsDir, this.config.mmprojFile, entry.mmproj)
+    if (!wouldBe) return null
+    return (
+      `已开启多 Token 预测（MTP），本次加载不会下发 --mmproj（${wouldBe}）：` +
+      'llama.cpp 的 MTP 与图像输入不能同时使用。需要看图请关掉 MTP。'
+    )
   }
 
   /** 会话内切换模型：能找到持久化钩子就落盘，否则只在本进程生效。 */
@@ -523,6 +569,8 @@ export class LocalModelRuntime {
       modelsDir: this.config.modelsDir,
       runtimeDir: this.config.runtimeDir,
       visionProjector: this.effectiveVisionProjector(entry),
+      mtp: this.config.mtp,
+      visionDisabledByMtp: entry ? this.visionDisabledByMtp(entry) : null,
     }
   }
 
@@ -645,7 +693,13 @@ export class LocalModelRuntime {
           cacheTypeV: this.config.cacheTypeV,
           jinja: this.config.jinja,
           chatTemplate: this.config.chatTemplate,
-          mmproj: resolveVisionProjector(this.config.modelsDir, this.config.mmprojFile, entry.mmproj),
+          mmproj: effectiveVisionProjector({
+            modelsDir: this.config.modelsDir,
+            mmprojFile: this.config.mmprojFile,
+            autoMmproj: entry.mmproj,
+            mtp: this.config.mtp,
+          }),
+          mtp: this.config.mtp,
           mmap: this.config.mmap,
           mlock: this.config.mlock,
           apiKey: this.config.apiKey,

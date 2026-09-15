@@ -198,6 +198,8 @@ export function buildState(options: WebBridgeOptions): Record<string, unknown> {
       lastError: status.lastError,
       modelsFound: status.modelsFound,
       visionProjector: status.visionProjector,
+      mtp: status.mtp,
+      visionDisabledByMtp: status.visionDisabledByMtp,
     },
   }
 }

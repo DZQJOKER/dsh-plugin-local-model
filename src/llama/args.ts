@@ -46,6 +46,13 @@ export interface LlamaServerArgInput {
   jinja: boolean
   chatTemplate: string
   mmproj: string
+  /**
+   * 多 Token 预测（MTP）：下发 `--spec-type draft-mtp`。
+   *
+   * 与 `mmproj` **互斥** —— 互斥由本文件的拼参数层强制保证（见 buildLlamaServerArgs），
+   * 调用方即使两个都传了，也不可能拼出一条让 llama-server 加载失败的命令行。
+   */
+  mtp: boolean
   mmap: boolean
   mlock: boolean
   apiKey: string
@@ -211,7 +218,21 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
 
   if (input.jinja) flag('--jinja')
   if (input.chatTemplate.trim()) flag('--chat-template', input.chatTemplate.trim())
-  if (input.mmproj.trim()) flag('--mmproj', input.mmproj.trim())
+
+  // MTP 与视觉投影互斥 —— 这条规则实现在这里而不是调用方，是因为这里才是
+  // 「参数真正被拼出来的地方」：只要 mtp 为真，mmproj 就绝不可能漏下去。
+  const mmproj = input.mmproj.trim()
+  if (input.mtp) {
+    flag('--spec-type', 'draft-mtp')
+    if (mmproj) {
+      notices.push(
+        '已开启 MTP，视觉投影文件（--mmproj）被自动忽略：llama.cpp 的 MTP 与图像输入不能同时使用',
+      )
+    }
+  } else if (mmproj) {
+    flag('--mmproj', mmproj)
+  }
+
   if (!input.mmap) flag('--no-mmap')
   if (input.mlock) flag('--mlock')
   if (input.apiKey.trim()) flag('--api-key', input.apiKey.trim())

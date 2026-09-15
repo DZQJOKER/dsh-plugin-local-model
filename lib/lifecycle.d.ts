@@ -40,6 +40,15 @@ export interface RuntimeStatus {
     runtimeDir: string;
     /** 本次加载会下发给 llama-server 的 --mmproj（绝对路径）；无视觉能力时为 null。 */
     visionProjector: string | null;
+    /** 多 Token 预测（MTP）当前是否开启。 */
+    mtp: boolean;
+    /**
+     * 视觉投影**因为开了 MTP 而被顶掉**时的说明（一句人话）；不是这种情况时为 null。
+     *
+     * 与 visionProjector 的区别：后者只说「最终下发什么」，这里回答「为什么本来该有的没了」——
+     * 用户开了 MTP 之后看到视觉投影变空，不给理由的话只会以为是插件坏了。
+     */
+    visionDisabledByMtp: string | null;
 }
 /** 插件向生命周期层注入的代理句柄，避免 lifecycle 直接依赖 http 实现。 */
 export interface ProxyHost {
@@ -184,6 +193,14 @@ export declare class LocalModelRuntime {
      * 取值规则与拼参数时完全一致 —— 界面显示的和真正下发的不该是两回事。
      */
     effectiveVisionProjector(entry?: LocalModelEntry | null): string | null;
+    /**
+     * 「视觉投影被 MTP 顶掉了」时给一句人话，其余情况返回 null。
+     *
+     * 判据刻意用 resolveVisionProjector（**不含** MTP 互斥）而不是 effectiveVisionProjector：
+     * 问的是「本来会不会有视觉投影」，而不是「最终下发什么」—— 后者在开了 MTP 时恒为空，
+     * 拿它判断等于永远拿不到答案。
+     */
+    private visionDisabledByMtp;
     /** 会话内切换模型：能找到持久化钩子就落盘，否则只在本进程生效。 */
     selectModel(id: string): Promise<LocalModelEntry>;
     get selectedModelId(): string;

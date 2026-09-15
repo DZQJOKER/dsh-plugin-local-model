@@ -46,6 +46,13 @@ export interface LlamaServerArgInput {
     jinja: boolean;
     chatTemplate: string;
     mmproj: string;
+    /**
+     * 多 Token 预测（MTP）：下发 `--spec-type draft-mtp`。
+     *
+     * 与 `mmproj` **互斥** —— 互斥由本文件的拼参数层强制保证（见 buildLlamaServerArgs），
+     * 调用方即使两个都传了，也不可能拼出一条让 llama-server 加载失败的命令行。
+     */
+    mtp: boolean;
     mmap: boolean;
     mlock: boolean;
     apiKey: string;

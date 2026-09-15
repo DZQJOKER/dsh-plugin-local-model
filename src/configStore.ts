@@ -19,6 +19,7 @@ const FIELD_TYPES: Record<keyof LocalModelConfig, 'number' | 'boolean' | 'string
   llamaServerPath: 'string',
   selectedModel: 'string',
   mmprojFile: 'string',
+  mtp: 'boolean',
   preload: 'boolean',
   host: 'string',
   port: 'number',

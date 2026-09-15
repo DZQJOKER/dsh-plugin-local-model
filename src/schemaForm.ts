@@ -50,7 +50,7 @@ const GROUP_DEFS: { id: string; title: string; hint: string; keys: (keyof LocalM
     id: 'model',
     title: '模型与目录',
     hint: '模型从哪里读、当前选中哪一个；需要图像输入时在这里挂上视觉投影文件。',
-    keys: ['enabled', 'selectedModel', 'mmprojFile', 'modelsDir', 'runtimeDir', 'llamaServerPath', 'preload'],
+    keys: ['enabled', 'selectedModel', 'mmprojFile', 'mtp', 'modelsDir', 'runtimeDir', 'llamaServerPath', 'preload'],
   },
   {
     id: 'server',
@@ -127,6 +127,7 @@ const LABELS: Partial<Record<keyof LocalModelConfig, string>> = {
   llamaServerPath: 'llama-server 路径',
   selectedModel: '当前模型',
   mmprojFile: '视觉投影文件',
+  mtp: '多 Token 预测（MTP）',
   preload: '预加载',
   host: '监听地址',
   port: '对外端口',

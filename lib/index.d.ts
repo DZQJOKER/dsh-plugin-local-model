@@ -16,7 +16,7 @@ import { type LocalModelConfig } from './config.js';
 /** 诊断信息里显示的插件名。 */
 export declare const name = "local-model";
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export declare const PLUGIN_VERSION = "0.3.0";
+export declare const PLUGIN_VERSION = "0.3.1";
 /**
  * 硬依赖：无。
  *
@@ -33,6 +33,7 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     llamaServerPath: string;
     selectedModel: string;
     mmprojFile: string;
+    mtp: boolean;
     preload: boolean;
     host: string;
     port: number;

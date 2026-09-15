@@ -22,7 +22,7 @@ import {
   parseHelp,
   unknownFlags,
 } from '../lib/llama/capabilities.js'
-import { groupShards, parseQuant, parseParams, pickModel, formatBytes, scanModels, scanModelsDetailed, resolveVisionProjector } from '../lib/registry.js'
+import { groupShards, parseQuant, parseParams, pickModel, formatBytes, scanModels, scanModelsDetailed, resolveVisionProjector, effectiveVisionProjector } from '../lib/registry.js'
 import { resolveDir, expandVars } from '../lib/paths.js'
 import { resolveConfig, clamp, logLevelOf, normalizeBool } from '../lib/configResolve.js'
 import { sanitize } from '../lib/configStore.js'
@@ -661,6 +661,91 @@ await testAsync('扫描结果同时给出模型列表与 mmproj 清单（供设�
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+// ── 多 Token 预测（MTP）─────────────────────────────────────────────────────
+section('多 Token 预测（MTP）')
+
+/**
+ * MTP 用例的公共输入：**刻意带一个 mmproj**。
+ * 互斥规则最核心的一条就是「开了 MTP 要把 --mmproj 丢掉」，输入里没有 mmproj 就永远测不出来。
+ */
+const mtpBaseInput = { ...kvBaseInput, mmproj: '/m/mmproj-a.gguf', mtp: false }
+
+const flagIndex = (args, flag) => args.indexOf(flag)
+const flagValue = (args, flag) => (args.includes(flag) ? args[flagIndex(args, flag) + 1] : undefined)
+
+test('默认关闭：不下发 --spec-type，--mmproj 照旧（老部署行为一字不变）', () => {
+  const built = buildLlamaServerArgs(mtpBaseInput)
+  assert.equal(flagIndex(built.args, '--spec-type'), -1, '默认必须是关的')
+  assert.equal(flagValue(built.args, '--mmproj'), '/m/mmproj-a.gguf', '没开 MTP 时视觉投影照旧下发')
+  assert.deepEqual(built.notices, [], '没开 MTP 就不该多出任何提示')
+})
+
+test('开启 MTP：下发 --spec-type draft-mtp', () => {
+  const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp: true })
+  assert.equal(flagValue(built.args, '--spec-type'), 'draft-mtp')
+  assert.ok(
+    built.usedFlags.includes('--spec-type'),
+    '必须进 usedFlags —— 否则「构建不认识这个选项」的 --help 校验发现不了老 llama.cpp',
+  )
+})
+
+test('互斥：开了 MTP 时 --mmproj 绝不下发（同时给会让加载直接失败）', () => {
+  const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp: true })
+  assert.equal(flagIndex(built.args, '--mmproj'), -1, 'MTP 与图像输入不能共存')
+  assert.equal(built.args.includes('/m/mmproj-a.gguf'), false, '连值都不能残留在命令行里')
+})
+
+test('互斥不静默：notices 说清视觉投影为什么没了', () => {
+  const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp: true })
+  assert.equal(built.notices.length, 1)
+  assert.ok(built.notices[0].includes('MTP'), '要点明是 MTP 造成的')
+  assert.ok(built.notices[0].includes('--mmproj'), '要点明被丢掉的是哪个参数')
+})
+
+test('本来就没有 mmproj：不刷无意义的「已忽略」提示', () => {
+  const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp: true, mmproj: '' })
+  assert.equal(flagValue(built.args, '--spec-type'), 'draft-mtp', 'MTP 本身照常开')
+  assert.deepEqual(built.notices, [], '没有东西被丢，就不该有提示')
+})
+
+test('effectiveVisionProjector：四种组合', () => {
+  const base = { modelsDir: '/m', mmprojFile: '', autoMmproj: '/m/mmproj-a.gguf' }
+  assert.equal(effectiveVisionProjector({ ...base, mtp: false }), '/m/mmproj-a.gguf', '没开 MTP：沿用自动关联')
+  assert.equal(effectiveVisionProjector({ ...base, mtp: true }), '', '开了 MTP：视觉投影为空')
+  assert.equal(effectiveVisionProjector({ ...base, autoMmproj: null, mtp: false }), '', '本来没有视觉能力：空')
+  assert.equal(
+    effectiveVisionProjector({ ...base, mmprojFile: 'vision/mmproj-b.gguf', mtp: true }),
+    '',
+    '显式选了也不生效 —— 互斥优先于用户的显式选择',
+  )
+})
+
+test('显示值与命令行下发值严格一致（防面板与实参错位）', () => {
+  for (const mtp of [false, true]) {
+    const shown = effectiveVisionProjector({
+      modelsDir: '/m',
+      mmprojFile: 'vision/mmproj-b.gguf',
+      autoMmproj: '/m/mmproj-a.gguf',
+      mtp,
+    })
+    const built = buildLlamaServerArgs({ ...mtpBaseInput, mtp, mmproj: shown })
+    assert.equal(flagValue(built.args, '--mmproj') ?? '', shown, `mtp=${mtp} 时面板显示与实参必须一致`)
+  }
+})
+
+test('配置：mtp 默认 false，字符串形态照样收敛（组合层不经写入闸门）', () => {
+  const env = { DSH_HOME: '/tmp/dsh' }
+  assert.equal(resolveConfig(undefined, env).mtp, false, '默认必须是关 —— 这就是「其他功能保持不变」的落点')
+  assert.equal(resolveConfig({ mtp: 'true' }, env).mtp, true)
+  assert.equal(resolveConfig({ mtp: '0' }, env).mtp, false)
+  assert.equal(resolveConfig({ mtp: '随便什么' }, env).mtp, false, '认不出的值回落默认，不能变成 true')
+})
+
+test('写入闸门认得 mtp，且 false 能落盘（否则用户在界面里关不掉）', () => {
+  assert.deepEqual(sanitize({ mtp: 'true' }), { mtp: true })
+  assert.deepEqual(sanitize({ mtp: false }), { mtp: false })
 })
 
 // ── 思考开关（请求体改写） ──────────────────────────────────────────────────

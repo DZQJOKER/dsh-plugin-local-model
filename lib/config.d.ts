@@ -11,6 +11,11 @@ export interface LocalModelConfig {
     selectedModel: string;
     /** 手动指定的视觉投影文件（mmproj）；留空 = 沿用同目录的自动关联。 */
     mmprojFile: string;
+    /**
+     * 多 Token 预测（MTP）。开启后下发 `--spec-type draft-mtp`，
+     * 并**强制禁用视觉投影**（两者在 llama.cpp 里不能共存）。
+     */
+    mtp: boolean;
     preload: boolean;
     host: string;
     port: number;
@@ -71,6 +76,7 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     llamaServerPath: string;
     selectedModel: string;
     mmprojFile: string;
+    mtp: boolean;
     preload: boolean;
     host: string;
     port: number;

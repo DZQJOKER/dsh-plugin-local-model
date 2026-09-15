@@ -431,6 +431,32 @@ await step('设置页数据面：本次新增的 13 项设置都在表单里且�
   assert.equal(state.config.topP, 0.95, 'top-p 必须原样是 0.95')
 })
 
+await step('设置页数据面：「启用思考」与「推理 token 预算」互相说明关系', async () => {
+  const res = await callBridge({ path: '/api/local-model/state' })
+  const state = JSON.parse(res.body)
+  const all = state.form.groups.flatMap((g) => g.fields)
+  const groupIdOf = (key) => state.form.groups.find((g) => g.fields.some((f) => f.key === key))?.id
+  const think = all.find((f) => f.key === 'enableThinking')
+  const budget = all.find((f) => f.key === 'reasoningBudget')
+
+  // 这两项都能让模型「少想」，但一个在模板层、一个在引擎层 —— 用户看不出区别就会来问
+  // 「它们冲突吗」。文案里必须互相点名，否则等于把这个问题留给用户自己猜。
+  assert.ok(
+    typeof think.description === 'string' && think.description.includes('推理 token 预算'),
+    '「启用思考」的说明里必须点名「推理 token 预算」，讲清两者不冲突但会叠加',
+  )
+  assert.ok(
+    typeof budget.description === 'string' && budget.description.includes('启用思考'),
+    '「推理 token 预算」的说明里必须反向点名「启用思考」',
+  )
+  // 取值语义不能含糊：-1 / 0 / N 三个分支都要写出来。
+  for (const token of ['-1', '0']) {
+    assert.ok(budget.description.includes(token), `预算的说明必须写清 ${token} 的含义`)
+  }
+  assert.equal(groupIdOf('enableThinking'), 'infer', '两个「思考」开关都落在「推理参数」分组')
+  assert.equal(groupIdOf('reasoningBudget'), 'infer')
+})
+
 await step('设置页数据面：三个新字段能存能读，并落盘到用户层配置', async () => {
   const res = await callBridge({
     method: 'POST',

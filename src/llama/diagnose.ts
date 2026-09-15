@@ -26,6 +26,20 @@ interface Rule {
 
 const RULES: Rule[] = [
   {
+    id: 'kv-stream-needs-single-sequence',
+    // 实测原文：failed to initialize the context: block KV streaming requires exactly one sequence (-np 1)
+    test: /block KV streaming requires exactly one sequence|KV streaming requires[^\n]{0,40}-np\s*1/i,
+    build: () => ({
+      summary: '「KV 缓存主机内存暂存」要求**恰好一个序列**，而本次 llama-server 拿到的序列数不是 1，上下文初始化直接失败。',
+      actions: [
+        '插件在开启暂存时会自动追加 -np 1；出现这条错误最常见的原因是「附加参数」里有 -np / --parallel 覆盖了它 —— 把它删掉。',
+        '也可以把「设置 → 本地模型 → KV 主机内存暂存（MiB）」填 0，完全不下发这个参数。',
+        '这个参数是特定 llama.cpp 分支的私有能力，上游构建上没有它，因此关掉它对加载没有任何影响。',
+      ],
+      evidence: 'block KV streaming requires exactly one sequence (-np 1)',
+    }),
+  },
+  {
     id: 'fit-blocked-by-pinned-layers',
     // 典型：failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort
     test: /failed to fit params to free device memory[\s\S]{0,200}?(n_gpu_layers|n_gpu_layers already set|already set by user)/i,

@@ -576,6 +576,27 @@ test('诊断：无法识别的日志返回 null（不硬凑）', () => {
   assert.equal(diagnoseLoadFailure('hello world'), null)
 })
 
+test('诊断：block KV streaming 要求单序列 → 命中，并指出 -np 是祸首', () => {
+  // 线上实测的完整形态：这是「开了 KV 流式暂存却没配 -np 1」的真实报错。
+  const log = [
+    "I srv load_model: loading model 'D:\\models\\Qwen3-8B-Q4_K_M.gguf'",
+    'E llama_init_from_model: failed to initialize the context: block KV streaming requires exactly one sequence (-np 1)',
+    'E common_fit_params: encountered an error while trying to fit params to free device memory: failed to create llama_context from model',
+    "E cmn common_init_: failed to create context with model 'Qwen3-8B-Q4_K_M.gguf'",
+    'E srv llama_server: exiting due to model loading error',
+  ].join('\n')
+  const d = diagnoseLoadFailure(log)
+  assert.ok(d, '这条错误由插件新增的参数引入，必须能被自己认出来')
+  assert.match(d.summary, /一个序列|单序列/, '结论要点明「要求单序列」')
+  assert.ok(d.actions.some((a) => a.includes('-np')), '建议里必须出现 -np')
+  assert.ok(
+    d.actions.some((a) => a.includes('附加参数') || a.includes('暂存')),
+    '必须告诉用户去哪儿改',
+  )
+  // 这条规则不能把别的诊断挤掉。
+  assert.equal(diagnoseLoadFailure('cudaMalloc failed: out of memory')?.summary.includes('显存'), true)
+})
+
 test('extractEffectiveContext：从日志里读出实际生效的 n_ctx', () => {
   const log = [
     'llama_model_loader: - overriding n_ctx size to 8192',
@@ -872,6 +893,56 @@ test('图像 token 为 0 = 不下发该项', () => {
 test('推理预算 0 依然下发（0 是有意义的取值：关掉思考）', () => {
   const { args } = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, reasoningBudget: 0 })
   assert.equal(flagValue(args, '--reasoning-budget'), '0')
+})
+
+test('KV 流式暂存：自动追加 -np 1（否则加载直接失败）', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvStreamStageMib: 1024 })
+  assert.equal(flagValue(built.args, '--kv-stream-stage-mib'), '1024')
+  assert.equal(
+    flagValue(built.args, '-np'),
+    '1',
+    '块级 KV 流式要求单序列；llama.cpp 的 -np 默认是自动，会落到多序列并报 ' +
+      '「block KV streaming requires exactly one sequence」直接退出（线上实测）',
+  )
+  assert.ok(
+    built.notices.some((n) => n.includes('-np 1')),
+    `自动补参数必须给出说明，否则日志里会莫名多出一个参数；实际 notices：${built.notices.join(' | ')}`,
+  )
+})
+
+test('KV 流式暂存关闭时：不追加 -np（并发不被平白降到 1）', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvStreamStageMib: 0 })
+  assert.equal(flagIndex(built.args, '-np'), -1, '没开暂存就不要动并发')
+  assert.equal(flagIndex(built.args, '--parallel'), -1)
+  assert.deepEqual(built.notices, [], '没有东西被改，就不该有提示')
+})
+
+test('构建不认识 KV 流式时：既不下发该参数，也不追加 -np', () => {
+  const built = buildArgs({
+    ...kvBaseInput,
+    ...NEW_PARAMS,
+    kvStreamStageMib: 1024,
+    knownFlags: new Set(['--jinja', '--temp']),
+  })
+  assert.equal(flagIndex(built.args, '--kv-stream-stage-mib'), -1)
+  assert.equal(flagIndex(built.args, '-np'), -1, '参数本身都没下发，没有任何理由把并发降到 1')
+})
+
+test('附加参数里自己写了 -np：不覆盖，但必须警告后果', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvStreamStageMib: 1024, extraArgs: '-np 4' })
+  assert.equal(flagValue(built.args, '-np'), '4', '尊重用户的显式设置，不覆盖')
+  assert.equal(built.args.filter((t) => t === '-np').length, 1, '绝不能出现两个 -np')
+  assert.equal(built.args.filter((t) => t === '--parallel').length, 0)
+  assert.ok(
+    built.notices.some((n) => n.includes('恰好一个序列')),
+    `必须把「要求单序列」这件事说出来，否则用户只会看到一句难懂的英文错误；实际：${built.notices.join(' | ')}`,
+  )
+})
+
+test('附加参数里用 --parallel 也算用户显式设置（两种写法都认）', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvStreamStageMib: 512, extraArgs: '--parallel 2' })
+  assert.equal(flagIndex(built.args, '-np'), -1, '用户写了 --parallel 就不该再补 -np')
+  assert.ok(built.notices.some((n) => n.includes('恰好一个序列')))
 })
 
 test('门控：构建不认识的「新选项」不发，并说明被跳过了', () => {

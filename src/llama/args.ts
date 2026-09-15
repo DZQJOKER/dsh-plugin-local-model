@@ -265,18 +265,49 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
    * 探测失败（knownFlags 为 null）时同样不下发 —— 与 --flash-attn 的取舍一致。
    */
   const skipped: string[] = []
-  const gate = (...tokens: string[]): void => {
+  /** 返回是否真的下发了 —— 有前置条件的参数要靠这个判断（见下面的 -np 1）。 */
+  const gate = (...tokens: string[]): boolean => {
     const name = tokens[0]!
     if (!input.knownFlags || !input.knownFlags.has(name)) {
       skipped.push(name)
-      return
+      return false
     }
     flag(...tokens)
+    return true
   }
 
   if (input.kvUnified) gate('--kv-unified')
+
+  /**
+   * 块级 KV 流式 + 单序列约束。
+   *
+   * 实测错误（那个「自适应 KV 流式」分支）：
+   *   E llama_init_from_model: failed to initialize the context:
+   *     block KV streaming requires exactly one sequence (-np 1)
+   * 而 llama.cpp 的 `-np` 默认是 **-1（自动）**，会落到多序列 —— 于是「开了暂存就加载不了」。
+   *
+   * 这是参数自身的前置条件，所以在拼参数层强制兜住，不指望用户自己去「附加参数」里补：
+   * 少了它，这个开关就是个「一开就崩」的陷阱。
+   * 注意 `-np 1` **只在暂存确实下发时才加** —— 构建不认 --kv-stream-stage-mib 时，
+   * 平白把并发降到 1 是没有理由的行为变更。
+   */
   const stageMib = Math.round(input.kvStreamStageMib)
-  if (stageMib > 0) gate('--kv-stream-stage-mib', String(stageMib))
+  if (stageMib > 0 && gate('--kv-stream-stage-mib', String(stageMib))) {
+    const extraTokens = splitArgs(input.extraArgs)
+    if (extraTokens.some((token) => token === '-np' || token === '--parallel')) {
+      // 用户显式写过就不覆盖 —— 但必须说清后果，否则他只会看到一句难懂的英文错误。
+      notices.push(
+        '你在「附加参数」里指定了 -np / --parallel。KV 流式暂存（--kv-stream-stage-mib）要求**恰好一个序列**，' +
+          '那里不是 1 的话加载会直接失败（block KV streaming requires exactly one sequence）。' +
+          '插件不覆盖你的显式设置，请自行改成 -np 1，或把 KV 主机内存暂存设为 0 关掉它。',
+      )
+    } else {
+      flag('-np', '1')
+      notices.push(
+        '已自动追加 -np 1：KV 流式暂存要求单序列（llama.cpp 的 -np 默认是自动，会落到多序列并导致加载失败）。',
+      )
+    }
+  }
 
   // ── 采样参数 ────────────────────────────────────────────────────────────
   // 这些（-s/temp/top-k/top-p/min-p/penalties/repeat-last-n）在几乎所有 llama.cpp 版本里

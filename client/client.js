@@ -353,6 +353,16 @@ window.__ModuleLoader__.load({
 		          state.runtime.modelsFound
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.metaLabel, children: "推理档位：" }),
+		          Array.isArray(state.runtime.reasoningEfforts) && state.runtime.reasoningEfforts.length > 0 ? (
+		            /* 模型模板支持哪几档，决定对话框里选的档位最后会变成什么 —— 一眼可见最省事。 */
+		            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { style: S.mono, children: [
+		              state.runtime.reasoningEfforts.join(" / "),
+		              "（按模板重映射）"
+		            ] })
+		          ) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { color: "#9a6209" }, children: "未解析出，本次不下发档位（只按开关控制思考与否）" })
+		        ] }),
+		        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
 		          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.metaLabel, children: "多 Token 预测：" }),
 		          state.runtime.mtp ? "已开启（--spec-type draft-mtp）" : "已关闭"
 		        ] }),

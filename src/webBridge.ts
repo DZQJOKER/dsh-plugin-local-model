@@ -200,6 +200,7 @@ export function buildState(options: WebBridgeOptions): Record<string, unknown> {
       visionProjector: status.visionProjector,
       mtp: status.mtp,
       visionDisabledByMtp: status.visionDisabledByMtp,
+      reasoningEfforts: status.reasoningEfforts,
     },
   }
 }

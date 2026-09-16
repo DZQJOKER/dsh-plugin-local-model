@@ -133,6 +133,37 @@ export function probeHealth(host: string, port: number, timeoutMs = 2000): Promi
  * 而 dsh 侧声明的 contextWindow 还是原值。两者不一致时，长会话会在中途崩，
  * 且崩得毫无线索 —— 所以启动后要对一次账，把偏差明说。
  */
+/**
+ * 读 /props 里的 `chat_template`（模型自带的对话模板）。
+ *
+ * 用途：解析这份模板认哪几个推理档位。**必须读，不能写死** ——
+ * 模板对不认识的档位是 raise 而不是忽略，而各家模板的档位表并不一致
+ * （实测 Qwen3.8 只认 xhigh/medium/low，连 high 都会让请求 500）。
+ * 失败返回 null，调用方据此改用「不下发档位」的保守策略。
+ */
+export function fetchServerChatTemplate(host: string, port: number, timeoutMs = 3000): Promise<string | null> {
+  return new Promise((resolve) => {
+    const req = http.request({ host, port, path: '/props', method: 'GET', timeout: timeoutMs }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => {
+        try {
+          const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { chat_template?: unknown }
+          resolve(typeof payload.chat_template === 'string' && payload.chat_template.length > 0 ? payload.chat_template : null)
+        } catch {
+          resolve(null)
+        }
+      })
+    })
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(null)
+    })
+    req.on('error', () => resolve(null))
+    req.end()
+  })
+}
+
 export function fetchServerContext(host: string, port: number, timeoutMs = 3000): Promise<number | null> {
   return new Promise((resolve) => {
     const req = http.request({ host, port, path: '/props', method: 'GET', timeout: timeoutMs }, (res) => {

@@ -13,10 +13,123 @@
 
 /** 两个思考开关。语义与设置页上的两个开关一一对应。 */
 export interface ThinkPolicy {
-  /** 启用思考 → `chat_template_kwargs.enable_thinking`。 */
+  /** 启用思考 → `chat_template_kwargs.enable_thinking`。**只在请求没有表达档位时才生效。** */
   enableThinking: boolean
   /** 保留历史 think → `chat_template_kwargs.preserve_thinking`，并在关闭时剥离历史 think。 */
   preserveThinking: boolean
+  /**
+   * 模型模板真正支持的档位（从 chat template 里解析出来）。
+   *
+   * `null` / 省略 = 没探测到 → **不下发 `reasoning_effort`**，只控制思考开关。
+   * 宁可少一层粒度，也不能把模板不认的档位发过去：实测模型模板对不认识的档位是
+   * `raise_exception`（不是忽略），一个档位名就能让整次请求 500。
+   */
+  supportedEfforts?: readonly string[] | null
+}
+
+/**
+ * llama.cpp 的档位词汇，按「想得多少」从少到多排列。
+ *
+ * 这只是**我们**用来判断远近的尺子，不代表模型支持全部七档 ——
+ * 各家模板的档位表并不一致（实测 Qwen3.8 只认 xhigh/medium/low）。
+ */
+export const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+
+/** 视为「明确不要思考」的取值。dsh 会把 off 经 settings.yaml 往返写成布尔 false，所以也得认。 */
+const OFF_VALUES = new Set(['off', 'none', 'no', 'false', 'disable', 'disabled', '0'])
+/** 视为「要思考，但没指定档位」的取值。 */
+const ON_VALUES = new Set(['on', 'yes', 'true', 'enable', 'enabled', 'auto', 'default'])
+
+export type EffortSignal = { kind: 'off' } | { kind: 'on' } | { kind: 'level'; level: string }
+
+/**
+ * 把请求里那个五花八门的档位归一化。
+ *
+ * 为什么必须容忍布尔 / 数字 / 字符串各种形态：实测 dsh 会把档位经 settings.yaml 往返后
+ * 变成 `reasoning_effort: false` / `true` / `null` 直接塞进请求（YAML 把 `off`/`on` 读成了布尔），
+ * 而模型模板对这些值一律 `raise_exception` —— 一次对话直接 500。
+ *
+ * `null` 按**没有表态**处理（不是 off）：空值语义上就是「没说」，
+ * 若把它当成「不思考」，会在用户没做任何选择时误关思考。
+ * 返回 null = 请求没有表达档位。
+ */
+export function normalizeEffortSignal(raw: unknown): EffortSignal | null {
+  if (raw === undefined || raw === null) return null
+  if (raw === false) return { kind: 'off' }
+  if (raw === true) return { kind: 'on' }
+  if (typeof raw === 'number') return raw === 0 ? { kind: 'off' } : { kind: 'on' }
+  if (typeof raw !== 'string') return null
+
+  const value = raw.trim().toLowerCase()
+  if (value === '') return null
+  if (OFF_VALUES.has(value)) return { kind: 'off' }
+  if (ON_VALUES.has(value)) return { kind: 'on' }
+  return { kind: 'level', level: value }
+}
+
+/**
+ * 把请求的档位映射到模型模板**真正支持**的档位。
+ *
+ * 为什么不能原样透传：模板对不认识的档位是 raise 而不是忽略。实测 Qwen3.8 的模板写着
+ * `not in ('xhigh', 'medium', 'low')` 就抛异常 —— 连 `high` 都会让请求 500。
+ *
+ * 规则：支持的档位里挑最接近的；距离相同时取**更高**那一档（用户选 High 显然是要更深）。
+ * `supported` 为空（没探测到）或档位名我们完全不认识时返回 null —— 不下发这个字段，
+ * 让模板用它自己的默认值。
+ */
+export function mapEffortToSupported(level: string, supported: readonly string[] | null | undefined): string | null {
+  if (!supported || supported.length === 0) return null
+  const pool = [...new Set(supported.map((item) => item.trim().toLowerCase()).filter(Boolean))]
+  if (pool.length === 0) return null
+
+  const want = level.trim().toLowerCase()
+  if (pool.includes(want)) return want
+
+  const wantRank = rankOf(want)
+  if (wantRank < 0) return null // 认不出的档位名（模型自定义的）→ 不猜
+
+  let best: string | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const candidate of pool) {
+    const rank = rankOf(candidate)
+    if (rank < 0) continue
+    const distance = Math.abs(rank - wantRank)
+    if (distance < bestDistance || (distance === bestDistance && best !== null && rank > rankOf(best))) {
+      best = candidate
+      bestDistance = distance
+    }
+  }
+  return best
+}
+
+function rankOf(level: string): number {
+  return (EFFORT_ORDER as readonly string[]).indexOf(level)
+}
+
+/**
+ * 从模型的 chat template 里读出它认哪几个档位。
+ *
+ * 为什么必须读而不是写死一份表：各家模板的档位表并不一致，写死必然在别的模型上踩雷
+ * （写「七档全给」正是 0.4.1 的错误 —— 在 Qwen3.8 上发 high 直接 500）。
+ *
+ * 做法：只在「包含 reasoning_effort 的 `not in (...)`」附近找引号里的候选名 ——
+ * 这是实测模板的写法。找不到就返回 null，调用方改为不下发档位。
+ */
+export function extractSupportedEfforts(chatTemplate: unknown): string[] | null {
+  if (typeof chatTemplate !== 'string' || chatTemplate.length === 0) return null
+
+  for (const match of chatTemplate.matchAll(/not\s+in\s*\(([^)]*)\)/gi)) {
+    const at = match.index ?? 0
+    const window = chatTemplate.slice(Math.max(0, at - 240), at + match[0].length)
+    if (!/reasoning[_\s-]*effort/i.test(window)) continue
+
+    const names = [...(match[1] ?? '').matchAll(/['"]([A-Za-z][A-Za-z0-9_-]*)['"]/g)].map((item) =>
+      (item[1] ?? '').toLowerCase(),
+    )
+    const unique = [...new Set(names.filter(Boolean))]
+    if (unique.length >= 2) return unique
+  }
+  return null
 }
 
 /** 承载模板变量的字段名。与 llama.cpp 的 OpenAI 兼容接口一致。 */
@@ -39,23 +152,6 @@ export const REASONING_EFFORT_FIELD = 'reasoning_effort'
  */
 export function isChatCompletionPath(pathname: string): boolean {
   return pathname.replace(/\/+$/, '').endsWith('/chat/completions')
-}
-
-/**
- * 策略 → 插件**希望**呈现的模板变量。
- *
- * 注意这只是一份「意图」，不是最终写进请求体的东西：开关**开启**时的 `enable_thinking: true`
- * 是**默认值**，请求里已经明确表达过就不该覆盖它 —— 真正的合并规则在 {@link mergeThinkKwargs}。
- * （0.3.x 曾经直接把它整体覆盖上去，于是 dsh 的推理档位被抹平，见那里的注释。）
- *
- * 两个值都写出来而不是省略「真」的一侧，是因为这一份同时也被 `--chat-template-kwargs` 的
- * 手工配置场景当作参考 —— 只给 false 会让人以为「打开」不需要下发任何东西。
- */
-export function thinkChatTemplateKwargs(policy: ThinkPolicy): Record<string, boolean> {
-  return {
-    enable_thinking: policy.enableThinking === true,
-    preserve_thinking: policy.preserveThinking === true,
-  }
 }
 
 /** 历史 think 的两种载体：独立的 reasoning 字段，以及正文里的 think 块。 */
@@ -101,36 +197,45 @@ export function rewriteChatRequestBody(raw: Buffer | string, policy: ThinkPolicy
 /**
  * 合并模板变量。
  *
- * 「谁说了算」必须分清，否则就会出现「滑杆拨了没反应」：
+ * 「谁说了算」必须分清，否则就会出现「滑杆拨了没反应」或者「拨了反而 500」：
  *
  *   - `preserve_thinking` 由**插件独占**（dsh 侧没有对应的 UI），直接写入；
- *   - `enable_thinking` 在插件开关**关闭**时是硬覆盖（强制 false）—— 用户明确要求不思考；
- *     在开关**开启**时只当**默认值**：请求里已经显式写了这一项，就原样放行。
- *     这一条是 2026-09-16 修掉的：原来无论请求说什么都被改写成 true，
- *     于是 dsh 的「推理等级」选 Off 也照样强制思考，选任何档位看起来都一样。
- *   - 顶层的 `reasoning_effort` 会被**下沉**进 `chat_template_kwargs`（见下面第 1 步）。
+ *   - **开 / 关以请求为准**：请求的显式 `enable_thinking` 最优先，其次是档位（有档位就是想思考），
+ *     插件开关只在请求**什么都没说**时才起作用。这样「开关开着选 Off 能关掉」和
+ *     「开关关着选 High 能开启」两件事同时成立；
+ *   - 档位值一律**归一化 + 按模型模板重映射**后再下发（见 normalizeEffortSignal /
+ *     mapEffortToSupported）。原来是把 `false`/`null`/`high` 原样塞给模板，
+ *     而模板对不认识的档位是 raise —— 用户那边表现为一次对话直接 500。
  */
 function mergeThinkKwargs(body: Record<string, unknown>, policy: ThinkPolicy): boolean {
   const current = body[CHAT_TEMPLATE_KWARGS_FIELD]
   const before: Record<string, unknown> = isPlainObject(current) ? { ...current } : {}
   const merged: Record<string, unknown> = { ...before }
 
-  // 1) 顶层档位下沉。llama.cpp 只读 chat_template_kwargs 里的那一个，留在顶层会被静默丢掉。
-  const topLevelEffort = body[REASONING_EFFORT_FIELD]
-  if (
-    typeof topLevelEffort === 'string' &&
-    topLevelEffort.trim() !== '' &&
-    merged[REASONING_EFFORT_FIELD] === undefined
-  ) {
-    merged[REASONING_EFFORT_FIELD] = topLevelEffort.trim()
-  }
+  // 候选取值：chat_template_kwargs 里的优先；dsh 的默认（openai）格式发的是顶层字段，
+  // 而 llama-server 会把顶层那个静默丢掉，所以要一起看。
+  const rawEffort = merged[REASONING_EFFORT_FIELD] !== undefined ? merged[REASONING_EFFORT_FIELD] : body[REASONING_EFFORT_FIELD]
+  const signal = normalizeEffortSignal(rawEffort)
 
-  // 2) preserve_thinking 归插件：dsh 侧没有这个开关，不会被请求覆盖。
+  // 1) preserve_thinking 归插件：dsh 侧没有这个开关，不会被请求覆盖。
   merged.preserve_thinking = policy.preserveThinking === true
 
-  // 3) enable_thinking：关闭 = 硬覆盖；开启 = 只补默认值，不夺走请求自己的决定。
-  if (policy.enableThinking !== true) merged.enable_thinking = false
-  else if (!Object.prototype.hasOwnProperty.call(before, 'enable_thinking')) merged.enable_thinking = true
+  // 2) 开 / 关：请求的显式 enable_thinking 最优先，其次看档位，最后才用插件开关。
+  //    最后一步是「插件开关只在请求什么都没说时生效」的落点 ——
+  //    于是「开关开着选 Off 能关掉」和「开关关着选 High 能开启」可以同时成立。
+  const explicitEnable = merged.enable_thinking
+  if (typeof explicitEnable === 'boolean') merged.enable_thinking = explicitEnable
+  else if (signal) merged.enable_thinking = signal.kind !== 'off'
+  else merged.enable_thinking = policy.enableThinking === true
+
+  // 3) 档位：只有「要思考」且请求给了具体档位、并且能映射到模板支持的值时才下发。
+  //    其余情况一律**删掉**这个字段 —— 留着任何模板不认的值（false / null / high）都会 500。
+  const effort =
+    merged.enable_thinking === true && signal?.kind === 'level'
+      ? mapEffortToSupported(signal.level, policy.supportedEfforts)
+      : null
+  if (effort) merged[REASONING_EFFORT_FIELD] = effort
+  else delete merged[REASONING_EFFORT_FIELD]
 
   if (shallowEqual(before, merged)) return false
   body[CHAT_TEMPLATE_KWARGS_FIELD] = merged

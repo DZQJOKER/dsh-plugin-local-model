@@ -29,7 +29,7 @@ import { registerLocalModelCommands } from './commands.js'
 export const name = 'local-model'
 
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export const PLUGIN_VERSION = '0.4.1'
+export const PLUGIN_VERSION = '0.4.2'
 
 /**
  * 硬依赖：无。
@@ -74,9 +74,11 @@ export function apply(ctx: Context, config?: Partial<LocalModelConfig>): void {
     modelDisplayName: () => runtime.status().model?.displayName ?? LOCAL_MODEL_ID,
     apiKey: () => runtime.config.apiKey,
     // 两个思考开关按「每次请求」生效：设置在会话中改了立刻跟上，不必重启模型。
+    // 档位表随模型加载后解析得到，所以这里每次都得现取 —— 换模型就换了一套档位。
     thinkPolicy: () => ({
       enableThinking: runtime.config.enableThinking,
       preserveThinking: runtime.config.preserveThinking,
+      supportedEfforts: runtime.reasoningEfforts,
     }),
     log,
   })

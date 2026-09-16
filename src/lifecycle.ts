@@ -22,12 +22,14 @@ import {
 } from './llama/capabilities.js'
 import { diagnoseLoadFailure, extractEffectiveContext } from './llama/diagnose.js'
 import {
+  fetchServerChatTemplate,
   fetchServerContext,
   findFreePort,
   killStaleLlamaProcess,
   LlamaServer,
   type LlamaServerExitInfo,
 } from './llama/runner.js'
+import { extractSupportedEfforts } from './requestRewrite.js'
 
 /** 模型目录扫描结果的缓存时间：避免每次状态查询都去读盘。 */
 const SCAN_TTL_MS = 5000
@@ -81,6 +83,13 @@ export interface RuntimeStatus {
    * 用户开了 MTP 之后看到视觉投影变空，不给理由的话只会以为是插件坏了。
    */
   visionDisabledByMtp: string | null
+  /**
+   * 当前模型模板支持的推理档位；`null` = 没解析出来（此时不下发档位，只控制开关）。
+   *
+   * 暴露到状态里是刻意的：档位表决定了「面板上选的那个档位最后变成什么」，
+   * 排查「拨了没反应」时第一眼就该看到它。
+   */
+  reasoningEfforts: string[] | null
 }
 
 /** 插件向生命周期层注入的代理句柄，避免 lifecycle 直接依赖 http 实现。 */
@@ -285,6 +294,14 @@ export class LocalModelRuntime {
   private started = false
   /** 启动后探测到的 llama.cpp 实际生效的上下文（受 --fit 影响，可能小于声明值）。 */
   private effectiveContext: number | null = null
+
+  /**
+   * 当前模型模板支持的推理档位（启动后从 chat template 解析得到）。
+   *
+   * `null` = 没解析出来 → 代理层不下发 `reasoning_effort`，只控制思考开关。
+   * 这是刻意的保守取舍：模板对不认识的档位是 raise，发错一次就是整次请求 500。
+   */
+  private supportedEfforts: string[] | null = null
   /** 探测结果与实际不符时（--flash-attn 形状），本次会话内记住「不下发」。 */
   private flashAttnOverride: FlashAttnMode | null = null
 
@@ -547,6 +564,15 @@ export class LocalModelRuntime {
     return entry
   }
 
+  /**
+   * 当前模型模板支持的推理档位；`null` = 没解析出来。
+   *
+   * 代理层拿它把请求里的档位重映射成模板真正认的值 —— 这是「档位拨了会 500」的根治点。
+   */
+  get reasoningEfforts(): readonly string[] | null {
+    return this.supportedEfforts
+  }
+
   get selectedModelId(): string {
     return (this.selectedOverride ?? this.config.selectedModel ?? '').trim()
   }
@@ -610,6 +636,7 @@ export class LocalModelRuntime {
       visionProjector: this.effectiveVisionProjector(entry),
       mtp: this.config.mtp,
       visionDisabledByMtp: entry ? this.visionDisabledByMtp(entry) : null,
+      reasoningEfforts: this.supportedEfforts ? [...this.supportedEfforts] : null,
     }
   }
 
@@ -650,6 +677,11 @@ export class LocalModelRuntime {
     lines.push(`入口：${status.endpoint}`)
     if (status.upstream) lines.push(`上游：${status.upstream}${status.pid ? `（pid ${status.pid}）` : ''}`)
     if (status.visionProjector) lines.push(`视觉投影：${status.visionProjector}`)
+    lines.push(
+      status.reasoningEfforts
+        ? `模型支持的推理档位：${status.reasoningEfforts.join(' / ')}（对话框里的档位会按它重映射）`
+        : '模型支持的推理档位：未解析出（本次不下发档位，只按开关控制思考与否）',
+    )
     if (status.state === 'ready') {
       lines.push(
         this.config.idleUnloadMinutes > 0
@@ -774,10 +806,16 @@ export class LocalModelRuntime {
       this.server = server
       this.commandLine = server.commandLine
       this.loadedAt = Date.now()
+
+      // 这两件事必须在宣布 ready **之前**做完，否则「加载后的第一个请求」会用到空状态：
+      // 上下文对账没做 → 状态卡显示不全；档位表没拿到 → 代理层不敢下发档位，
+      // 用户看到的就是「刚加载完那一下档位不生效」（/props 是本地请求，代价只有几毫秒）。
+      await this.reconcileContext(port)
+      await this.discoverEffortVocabulary(port)
+
       this.touch()
       this.setState('ready')
       this.log.info(`本地模型已就绪：${this.proxy?.origin ?? ''}/v1（模型别名 ${DEFAULT_ALIAS}）`)
-      void this.reconcileContext(port)
     } catch (error) {
       const message = (error as Error).message
       this.lastError = message
@@ -900,6 +938,35 @@ export class LocalModelRuntime {
       )
     } else if (effective > declared) {
       this.log.debug(`llama.cpp 实际上下文 ${effective}，不低于声明的 ${declared}`)
+    }
+  }
+
+  /**
+   * 启动后从模型模板解析「它认哪几个推理档位」。
+   *
+   * 为什么必须做：模板对不认识的档位是 **raise_exception**，不是忽略 ——
+   * 实测 Qwen3.8 的模板只认 xhigh/medium/low，面板上选个 High 就能让整次对话 500。
+   * 而各家模板的档位表并不一致，所以只能读、不能写死。
+   *
+   * 解析不出来时不报错，只把代理层切到「不下发档位」的保守策略（思考开关照常工作）——
+   * 少一层颗粒度，好过一开口就失败。
+   */
+  private async discoverEffortVocabulary(port: number): Promise<void> {
+    if (this.disposed) return
+    const template = await fetchServerChatTemplate(this.config.host, port)
+    const efforts = extractSupportedEfforts(template)
+    this.supportedEfforts = efforts
+
+    if (efforts) {
+      this.log.info(
+        `模型模板支持的推理档位：${efforts.join(' / ')}。` +
+          '对话框里的档位会按它重新映射（模板对不认识的档位会直接报错，所以不能原样透传）。',
+      )
+    } else {
+      this.log.info(
+        '未能从模型模板解析出推理档位表。本次只按开关控制「思考与否」，不下发具体档位 —— ' +
+          '宁可少一层颗粒度，也不冒模板报错的风险。',
+      )
     }
   }
 

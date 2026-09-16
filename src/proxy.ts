@@ -29,6 +29,23 @@ export interface ProxyOptions {
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'upgrade'])
 
 /**
+ * 把改写后的思考相关字段摘出来打日志。
+ *
+ * 为什么值得单独做：排查「档位拨了没反应」时，最缺的就是**第一手事实** ——
+ * dsh 到底发了什么、插件最后发了什么。没有这一行，只能靠猜；
+ * 有了它可以一句话定位是「上游没发档位」还是「插件把它改错了」。
+ */
+function describeThinking(body: Buffer): string {
+  try {
+    const payload = JSON.parse(body.toString('utf8')) as Record<string, unknown>
+    const kwargs = payload.chat_template_kwargs
+    return `发给 llama-server 的思考参数 ${JSON.stringify(kwargs ?? {})}`
+  } catch {
+    return '(请求体无法解析，仅记录发生了改写)'
+  }
+}
+
+/**
  * 需要改写请求体时的读取上限。
  *
  * 对话补全的请求体大小由上下文长度决定（1M ctx 的纯文本也才几 MB），64 MB 足够宽裕；
@@ -235,6 +252,7 @@ export class LocalModelProxy {
         const outcome = rewriteChatRequestBody(await readRequestBody(req, MAX_REWRITE_BYTES), policy)
         body = outcome.body
         if (outcome.notice) this.options.log.debug(`未改写请求体：${outcome.notice}`)
+        else if (outcome.changed) this.options.log.debug(`已改写请求体：${describeThinking(body)}`)
       } catch (error) {
         this.options.log.error(`读取请求体失败：${(error as Error).message}`)
         if (!res.headersSent) json(res, 413, { error: { message: (error as Error).message, type: 'local_model_request_error' } })

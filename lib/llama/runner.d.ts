@@ -32,6 +32,15 @@ export declare function probeHealth(host: string, port: number, timeoutMs?: numb
  * 而 dsh 侧声明的 contextWindow 还是原值。两者不一致时，长会话会在中途崩，
  * 且崩得毫无线索 —— 所以启动后要对一次账，把偏差明说。
  */
+/**
+ * 读 /props 里的 `chat_template`（模型自带的对话模板）。
+ *
+ * 用途：解析这份模板认哪几个推理档位。**必须读，不能写死** ——
+ * 模板对不认识的档位是 raise 而不是忽略，而各家模板的档位表并不一致
+ * （实测 Qwen3.8 只认 xhigh/medium/low，连 high 都会让请求 500）。
+ * 失败返回 null，调用方据此改用「不下发档位」的保守策略。
+ */
+export declare function fetchServerChatTemplate(host: string, port: number, timeoutMs?: number): Promise<string | null>;
 export declare function fetchServerContext(host: string, port: number, timeoutMs?: number): Promise<number | null>;
 /**
  * llama-server 子进程的一次生命周期。

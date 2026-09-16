@@ -189,6 +189,15 @@ export function LocalModelSection() {
             {state.runtime.modelsFound}
           </div>
           <div>
+            <span style={S.metaLabel}>推理档位：</span>
+            {Array.isArray(state.runtime.reasoningEfforts) && state.runtime.reasoningEfforts.length > 0 ? (
+              /* 模型模板支持哪几档，决定对话框里选的档位最后会变成什么 —— 一眼可见最省事。 */
+              <span style={S.mono}>{state.runtime.reasoningEfforts.join(' / ')}（按模板重映射）</span>
+            ) : (
+              <span style={{ color: '#9a6209' }}>未解析出，本次不下发档位（只按开关控制思考与否）</span>
+            )}
+          </div>
+          <div>
             <span style={S.metaLabel}>多 Token 预测：</span>
             {state.runtime.mtp ? '已开启（--spec-type draft-mtp）' : '已关闭'}
           </div>

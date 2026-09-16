@@ -22,6 +22,7 @@ function arg(name, fallback) {
 const host = arg('--host', '127.0.0.1')
 const port = Number(arg('--port', '0'))
 const alias = arg('--alias', 'local')
+const ctxSize = Number(arg('-c', '8192'))
 const loadMs = Number(process.env.FAKE_LOAD_MS ?? 300)
 const startedAt = Date.now()
 
@@ -44,6 +45,23 @@ const server = http.createServer(async (req, res) => {
       return
     }
     const body = JSON.stringify({ status: 'ok' })
+    res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
+    res.end(body)
+    return
+  }
+
+  if (url.pathname === '/props') {
+    // 与实测的 Qwen3.8 模板同形的片段：它只认 xhigh/medium/low，其它值直接 raise。
+    // 插件靠解析这段来知道该把界面上的档位重映射成什么。
+    const chatTemplate = [
+      '{%- if enable_thinking is undefined or enable_thinking is true %}',
+      "  {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}",
+      "  {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}",
+      "    {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ '. Supported types are xhigh (default), medium, and low.') }}",
+      '  {%- endif %}',
+      '{%- endif %}',
+    ].join('\n')
+    const body = JSON.stringify({ default_generation_settings: { n_ctx: ctxSize }, n_ctx: ctxSize, chat_template: chatTemplate })
     res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
     res.end(body)
     return

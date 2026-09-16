@@ -272,6 +272,12 @@ await step('常驻代理端口被监听，状态端点可访问', async () => {
   assert.equal(status.state, 'idle', '没有对话时应当处于待机状态')
   assert.equal(status.pid, null, '待机时不应有 llama-server 进程')
   assert.equal(status.idleUnloadMinutes, 5)
+  // 档位表要能在状态里读到 —— 排查「档位拨了没反应」时第一眼看的就是它。
+  assert.ok(
+    status.reasoningEfforts === null || Array.isArray(status.reasoningEfforts),
+    `reasoningEfforts 必须是数组或 null，实际 ${JSON.stringify(status.reasoningEfforts)}`,
+  )
+  assert.equal(status.reasoningEfforts, null, '模型还没加载时自然解析不出档位表')
 })
 
 await step('模型未加载时 /v1/models 仍可列出模型（dsh 模型下拉框依赖它）', async () => {

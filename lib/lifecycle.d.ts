@@ -50,6 +50,13 @@ export interface RuntimeStatus {
      * 用户开了 MTP 之后看到视觉投影变空，不给理由的话只会以为是插件坏了。
      */
     visionDisabledByMtp: string | null;
+    /**
+     * 当前模型模板支持的推理档位；`null` = 没解析出来（此时不下发档位，只控制开关）。
+     *
+     * 暴露到状态里是刻意的：档位表决定了「面板上选的那个档位最后变成什么」，
+     * 排查「拨了没反应」时第一眼就该看到它。
+     */
+    reasoningEfforts: string[] | null;
 }
 /** 插件向生命周期层注入的代理句柄，避免 lifecycle 直接依赖 http 实现。 */
 export interface ProxyHost {
@@ -174,6 +181,13 @@ export declare class LocalModelRuntime {
     private started;
     /** 启动后探测到的 llama.cpp 实际生效的上下文（受 --fit 影响，可能小于声明值）。 */
     private effectiveContext;
+    /**
+     * 当前模型模板支持的推理档位（启动后从 chat template 解析得到）。
+     *
+     * `null` = 没解析出来 → 代理层不下发 `reasoning_effort`，只控制思考开关。
+     * 这是刻意的保守取舍：模板对不认识的档位是 raise，发错一次就是整次请求 500。
+     */
+    private supportedEfforts;
     /** 探测结果与实际不符时（--flash-attn 形状），本次会话内记住「不下发」。 */
     private flashAttnOverride;
     private readonly listeners;
@@ -222,6 +236,12 @@ export declare class LocalModelRuntime {
     private visionDisabledByMtp;
     /** 会话内切换模型：能找到持久化钩子就落盘，否则只在本进程生效。 */
     selectModel(id: string): Promise<LocalModelEntry>;
+    /**
+     * 当前模型模板支持的推理档位；`null` = 没解析出来。
+     *
+     * 代理层拿它把请求里的档位重映射成模板真正认的值 —— 这是「档位拨了会 500」的根治点。
+     */
+    get reasoningEfforts(): readonly string[] | null;
     get selectedModelId(): string;
     get currentState(): RuntimeState;
     /** 请求开始时计数：有活跃请求时绝不卸载。 */
@@ -258,6 +278,17 @@ export declare class LocalModelRuntime {
      * 一旦实际值小于声明值，长会话会在超出实际 ctx 后中断，且现场看不出原因 —— 因此主动对一次账。
      */
     private reconcileContext;
+    /**
+     * 启动后从模型模板解析「它认哪几个推理档位」。
+     *
+     * 为什么必须做：模板对不认识的档位是 **raise_exception**，不是忽略 ——
+     * 实测 Qwen3.8 的模板只认 xhigh/medium/low，面板上选个 High 就能让整次对话 500。
+     * 而各家模板的档位表并不一致，所以只能读、不能写死。
+     *
+     * 解析不出来时不报错，只把代理层切到「不下发档位」的保守策略（思考开关照常工作）——
+     * 少一层颗粒度，好过一开口就失败。
+     */
+    private discoverEffortVocabulary;
     private armTicker;
     /** 配置变了（可能关掉了自动卸载、或改了时长），重排定时器。 */
     private restartTicker;

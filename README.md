@@ -11,6 +11,7 @@
 
 ## 更新日志
 
+- **0.4.2** — 修掉「推理档位拨了会 500」。`0.4.1` 让 dsh 把档位写进 `chat_template_kwargs` 之后暴露了两个新问题：① 模型模板对**不认识的档位是直接 `raise_exception`**（实测这个模型只认 `xhigh`/`medium`/`low`），而插件把面板档位原样透传、dsh 还会把 `off` 发成布尔 `false` —— 一次对话直接 500；② 插件仍会在某些情形下**覆盖请求自己的档位选择**（开关关闭时把 High 也压成不思考）。现在：加载后**读模型模板解析出它支持的档位表**（日志与状态卡都会显示），面板档位按表重映射（`high → xhigh`）；映射不出来就不发这个字段；`false`/`null`/`true` 等形态一律归一化；开/关**以请求为准**，插件开关只在请求什么都没说时生效。
 - **0.4.1** — 修掉「dsh 的推理等级滑杆形同虚设」。两处成因，都修了：① 插件注册进 dsh 的路由 profile **没有声明这是推理模型**（缺 `reasoningEfforts`），pi-ai 因此什么思考参数都不发，滑杆只是个摆设；现在会声明 `compat.thinkingFormat = chat-template` 与七档映射，让 dsh 把档位写进 `chat_template_kwargs`（llama.cpp **唯一**认的通道）。② 插件的「启用思考」开关**无条件**把 `enable_thinking` 改写成 `true`，把 dsh 选的 Off 也顶掉了 —— 现在开关开启时只当**默认值**：请求里已经显式写了 `enable_thinking` 或带了档位就原样放行；关闭时仍是硬覆盖。另外代理会把顶层的 `reasoning_effort` **下沉**进 `chat_template_kwargs` —— 顶层字段会被 llama-server 静默丢掉（无报错、无日志），这是社区踩过的坑。
 - **0.4.0** — ① **新增 13 项设置**：KV 缓存策略 2 项（`kvUnified`、`kvStreamStageMib`，其中流式暂存是特定 llama.cpp 分支的私有参数）、采样参数 8 项（`temp` / `topK` / `topP` / `minP` / `presencePenalty` / `repeatPenalty` / `repeatLastN` / `seed`）、多模态与推理预算 3 项（`imageMinTokens` / `imageMaxTokens` / `reasoningBudget`）。这些参数现在会在每次加载时**显式下发并覆盖 llama.cpp 自身的默认值**（`temp` 0.8→0.75、`top-k` 40→20、`min-p` 0.05→0、`repeat-penalty` 1.1→1.0），设置页里逐项注明了差异。② **删除「接入 dsh」整组设置**（`routeName` / `modelAlias` / `routeModelId` / `contextWindow` / `registerRoute` / `exposeTool` / `allowModelControl`）：这 7 项改为 `configResolve.ts` 里的常量，取值沿用原默认值，**行为与默认安装完全一致但从此不可配置**。③ `maxTokens`（单次最大输出 tokens）保留，从「接入 dsh」挪进「推理参数」。④ 顺带修掉一处会静默毁掉小数设置的 bug：`clamp()` 内部有四舍五入，`temp 0.75` 会被它变成 `1`；小数项改用新的 `clampFloat()`。
 - **0.3.1** — 新增「多 Token 预测（MTP）」开关（`mtp`，**默认关闭**）。开启后加载时下发 `--spec-type draft-mtp`，用模型自带的预测头做投机解码，本地生成速度通常提升 1.2～2 倍。**开启 MTP 会自动禁用视觉投影文件（`--mmproj`）** —— 两者在 llama.cpp 里不能共存，强行一起下发会导致加载失败；这条互斥规则写在参数拼装层（`src/llama/args.ts`），只要 `mtp` 为真 `--mmproj` 就不可能漏下去，界面上对应的下拉框会立即置灰并在状态卡里说明原因。关掉 MTP 后用户选的 `mmprojFile` 不会被清空，只是暂时不生效。默认关闭，因此**升级后老部署的行为一字不变**。
@@ -302,31 +303,44 @@ KV 两项用于长上下文：
 
 ### dsh 的「推理等级」滑杆怎么连到本地模型
 
-对话框里的 **Off / Low / Medium / High** 要真正生效，需要三件事同时成立。`0.4.1` 之前**第一件就不成立**，
-所以滑杆怎么拨都没反应、而模型又一直在思考：
+对话框里的 **Off / Low / Medium / High** 要真正生效，得跨过三道关。`0.4.1` 及以前只走通了一半，
+所以出现「拨了没反应」；`0.4.2` 把三道都走通了：
 
 | 环节 | 谁负责 | 说明 |
 | --- | --- | --- |
-| ① dsh 知道这是推理模型、知道档位怎么写 | **插件的路由 profile** | `0.4.1` 起声明 `compat.thinkingFormat = chat-template` 与七档 `reasoningEfforts`。不声明的话，pi-ai 认为这不是推理模型，**一个思考参数都不发** |
-| ② 档位走对通道 | 同上 | 档位必须落在 `chat_template_kwargs.reasoning_effort`。**顶层的 `reasoning_effort` 会被 llama-server 静默丢掉**（无报错、无日志），插件顺带会把顶层那份下沉进去 |
-| ③ 插件不覆盖请求的选择 | 代理层 | 「启用思考」开关**开启时只当默认值**；只有开关**关闭**才硬覆盖成 `false` |
+| ① dsh 知道这是推理模型 | **你的路由配置** | 模型条目里要有 `reasoningEfforts`。没有它，pi-ai 认为这不是推理模型，**一个思考参数都不发** |
+| ② 档位送到 llama-server | 代理层 | 档位必须落在 `chat_template_kwargs.reasoning_effort`。**顶层的 `reasoning_effort` 会被静默丢掉**（无报错、无日志），插件会把它挪进去 |
+| ③ 发给模板的值必须是它认的 | 代理层 | 插件**读模型的对话模板**，把档位重映射成模板真正支持的那几个 |
+
+第 ③ 条是关键，也是 `0.4.1` 踩的坑：**模型模板对不认识的档位是直接 throw，不是忽略。**
+实测这个模型的模板里写着：
+
+```jinja
+{%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}
+    {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ ...) }}
+```
+
+它只认 `xhigh` / `medium` / `low`（默认 `xhigh`）。于是面板上选个 High、或者 dsh 把 `off` 写成布尔 `false`，
+都会让**整次对话 500**。`0.4.2` 起插件的做法是：
+
+- 加载后读一次模型模板，解析出它支持的档位表（日志里会打出来，设置页状态卡也显示）；
+- 面板档位 → 映射到表里最接近的一个（距离相同时取更高，所以 `high → xhigh`）；
+- 映射不出来、或压根没解析到档位表 → **干脆不发这个字段**，让模板用自己的默认值。
+
+`off` 的传递也一并修好了：dsh 会把「档位 = off」经 `settings.yaml` 往返后变成**布尔 `false`**
+（YAML 把 `off` 读成布尔）。插件现在认得这种形态，会把它翻译成 `enable_thinking: false`。
 
 开关保持开启时，最终发给 llama-server 的内容：
 
-| 档位 | `chat_template_kwargs` |
+| 对话框档位 | 实际下发 |
 | --- | --- |
 | Off | `{"enable_thinking": false, "preserve_thinking": true}` |
 | Low | `{"enable_thinking": true, "reasoning_effort": "low", "preserve_thinking": true}` |
 | Medium | `{"enable_thinking": true, "reasoning_effort": "medium", "preserve_thinking": true}` |
-| High | `{"enable_thinking": true, "reasoning_effort": "high", "preserve_thinking": true}` |
+| High | `{"enable_thinking": true, "reasoning_effort": "xhigh", "preserve_thinking": true}` ← 按模板改写 |
 
-档位名直接用 **llama.cpp 自己的词汇**（`minimal` / `low` / `medium` / `high` / `xhigh` / `max`），
-插件不做模型专用的猜测 —— 传一个模型模板没定义的档位名有可能在模板层报错，
-而「哪个模型定义了哪几档」只有模型自己知道。
-
-> ⚠️ 档位是否真的改变行为，最终取决于**模型的对话模板**：模板里写了哪几档，就只有哪几档有效。
-> 例如 Qwen3.8 这一代的模板定义的是 `low` / `medium` / `xhigh` —— 如果你选 High 感觉没变化，
-> 先看看滑杆上有没有更高档；没有的话说明插件该把 High 映射成 `xhigh`（改一行的事，说一声即可）。
+> 想知道你这台机器实际解析出的档位表：看日志里的「模型模板支持的推理档位」那一行，
+> 或看 **设置 → 本地模型** 状态卡里的「推理档位」。它决定了面板档位最后会变成什么。
 >
 > 另一个更可靠的杠杆是**「推理 token 预算」**（`--reasoning-budget`，引擎级硬上限）：
 > 档位是「请模型自己想多深」，预算是「想超过 N 个 token 就强制打断」。两者互补，不冲突。
@@ -337,7 +351,7 @@ KV 两项用于长上下文：
 
 | 设置 | 作用层 | 生效时机 | 干什么 |
 | --- | --- | --- | --- |
-| **启用思考** | 模板级 | **每次请求**（改写请求体 `chat_template_kwargs.enable_thinking`） | 告诉对话模板：要不要进入思考模式。**开启时只当默认值** —— dsh 的推理等级（含 Off）说了算；**关闭时硬覆盖**成不思考 |
+| **启用思考** | 模板级 | **每次请求** | 告诉对话模板：要不要进入思考模式。**只在请求什么都没说时才生效** —— 请求带了 `enable_thinking` 或推理档位就听请求的 |
 | **保留历史 think** | 模板级 | 每次请求（`preserve_thinking`，关闭时还会剥掉历史里的 think 文本） | 多轮对话中，历史 assistant 的思考内容要不要留在上下文里 |
 | **推理 token 预算** | 引擎级 | **加载时**（`--reasoning-budget`） | 数着思考 token，超了强制结束思考 |
 
@@ -515,8 +529,9 @@ disabled ──启用──▶ idle ──首条对话──▶ starting ──�
 | 加载失败，日志里出现 `unknown argument: --spec-type` / `--spec-type: invalid value` | 这个 llama.cpp 构建不支持 MTP（早于 2026-05），或该构建只认别的取值。升级 llama.cpp；插件在启动前会通过 `--help` 探测并打一条「不认识这个选项」的警告，看到警告就说明是这个原因 |
 | 加载失败，同时出现 MTP 与 mmproj 相关字样 | 说明命令行里同时下发了 `--spec-type` 和 `--mmproj` —— 0.3.1 的拼装层不会产生这种组合，所以要么是你在「附加参数」里手写了其中一个、要么是旧版本。检查 **设置 → 本地模型 → 附加参数**，删掉手写的 `--mmproj` 或 `--spec-type` |
 | 升级到 0.4.0 后生成风格变了（更保守 / 更容易重复 / 候选更单调） | **这是预期内的**：新增的 8 个采样参数每次加载都会显式下发，并覆盖 llama.cpp 自身默认值 —— `temp` 0.8→0.75、`top-k` 40→20、`min-p` 0.05→0、`repeat-penalty` 1.1→1.0。想退回原样，去 **设置 → 本地模型 → 采样与 KV 缓存** 把这些值填成 llama.cpp 的默认值（见第 4 节的对照表） |
-| 对话框里的「推理等级」拨哪个档位都没反应 | `0.4.1` 之前这是必然的：插件注册的路由没声明推理能力，dsh 一个思考参数都不发，而插件又把 `enable_thinking` 无条件写成 `true`。升级到 `0.4.1` 并**重启 dsh**（路由 profile 只在启动时注册一次）即可。升级后若仍无反应，先确认模型模板确实定义了你选的档位 —— 见第 4 节「dsh 的「推理等级」滑杆怎么连到本地模型」 |
-| 选了 Off 但模型还是在思考 | 两种情况：① 用的是 `0.4.1` 之前的版本（插件会把 Off 顶回 `true`）；② 模型模板不认 `enable_thinking`（0.4.1 起选 Off 会下发 `{"enable_thinking": false}`，模板忽略它就仍会思考）。后者可以改用「推理 token 预算 = 0」强制掐断思考 |
+| 对话框里的「推理等级」拨哪个档位都没反应 | 先看 **设置 → 本地模型** 状态卡里的「推理档位」和日志里的「模型模板支持的推理档位」：解析不出档位表，插件就只会按开关控制思考与否，不碰档位。解析出来了还不行，就是模型模板没定义你选的那一档 —— 换个档位试试 |
+| 对话直接报 500，错误里有 `Unexpected reasoning effort xxx` | 模型模板不认这个档位值。`0.4.2` 起插件会读模板、按它支持的档位重映射，正常不会再出现；若仍出现，把日志里「模型模板支持的推理档位」那一行发出来 |
+| 选了 Off 但模型还是在思考 | 三种可能：① 用的是 `0.4.1` 及以前（会把 Off 顶回 `true`，或把 `false` 原样发给模板导致 500）；② 模型模板不认 `enable_thinking`（0.4.2 起选 Off 会下发 `{"enable_thinking": false}`，模板忽略它就仍会思考）；③ dsh 侧的档位压根没传过来。后者可以用「推理 token 预算 = 0」强制掐断思考 |
 | 升级后模型在 dsh 里「消失」或提示路由注册失败 | 新增的 `compat` / `reasoningEfforts` 声明若不被这个 dsh 版本接受，注册会失败 —— 插件不会因此影响本地端点（照旧降级为打印可粘贴的 YAML），把日志里的 `llm.<method>() 注册失败` 那一行发出来即可 |
 | 设置页里找不到「路由名 / 模型别名 / 模型 ID / 声明上下文 / 自动注册路由」了 | **0.4.0 按需求删掉了整组「接入 dsh」设置**，它们变成了 `src/configResolve.ts` 里的常量（路由名 `local-llama`、id `local`，其余恒为真/假）。功能不变，只是不可配置。其中「声明上下文」现在直接跟随 `ctxSize`，见第 4 节「接入 dsh 那些设置去哪了」 |
 | 日志说「这个 llama-server 不认识以下选项，已跳过：`--kv-stream-stage-mib`…」 | 这是**预期行为**，不是故障：`--kv-unified` / `--kv-stream-stage-mib` / `--image-*-tokens` / `--reasoning-budget` 只在构建确实支持时才下发（`--kv-stream-stage-mib` 是特定分支的私有参数）。要么升级到支持它的构建，要么把这些设置留在 0（不下发），加载不受影响 |
@@ -535,7 +550,7 @@ npm run build       # tsc → lib/，再打包客户端 bundle → client/client
 npm run build:client # 只重打浏览器半侧（改 client/src 后用它）
 npm run verify      # 清单自检：bundle 合法性 + 客户端半侧合规 + 在哪些 profile 装了却没生效
 npm run verify:llama # 参数验收：拿本机的 llama-server 真起一次，确认它接受插件下发的参数
-npm test            # 下面五套全跑（共 145 项：单测 100 + e2e 13 + 加载 24 + 客户端 8 + 清单 12 项检查）
+npm test            # 下面五套全跑（共 147 项：单测 102 + e2e 13 + 加载 24 + 客户端 8 + 清单 12 项检查）
 npm run test:client # 浏览器 bundle：用假 loader 真加载一遍，校验格式与插槽注册规格
 npm run test:load   # 类宿主跑 apply()：目录骨架、代理端口、设置面板数据面与安全约束
 npm run test:unit   # 参数拼装 / 能力探测 / 分片归并 / 路径与配置解析

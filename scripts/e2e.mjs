@@ -143,7 +143,12 @@ async function buildRuntime(overrides = {}) {
     modelDisplayName: () => runtime.status().model?.displayName ?? LOCAL_MODEL_ID,
     apiKey: () => config.apiKey,
     // 生产里由 index.ts 注入；这里按配置取，才能验证「改写后的请求体真的到了上游」。
-    thinkPolicy: () => ({ enableThinking: config.enableThinking, preserveThinking: config.preserveThinking }),
+    // supportedEfforts 也必须带上 —— 少了它代理层不敢下发档位，测出来的就不是真实行为。
+    thinkPolicy: () => ({
+      enableThinking: config.enableThinking,
+      preserveThinking: config.preserveThinking,
+      supportedEfforts: runtime.reasoningEfforts,
+    }),
     log,
   })
   runtime.attachProxy(proxy)
@@ -292,30 +297,34 @@ await step('思考开关：关闭时下发 false，并剥掉历史 think 后再�
   }
 })
 
-await step('思考开关：dsh 的推理档位不被抹平（Off 真能关掉，档位真能落到 kwargs）', async () => {
+await step('思考开关：dsh 的推理档位不被抹平，也不会把模板不认的值发过去', async () => {
   const ctx = await buildRuntime()
   try {
     await ctx.runtime.init()
 
-    // 形态一：dsh 的「推理等级 = Off」→ chat_template_kwargs.enable_thinking=false。
-    // 插件开关是默认开启的，这里必须原样放行 —— 曾经被无条件改回 true，滑杆形同虚设。
+    // 形态一：dsh 的「推理等级 = Off」实测会发成布尔 false（settings.yaml 把 off 读成布尔）。
+    // 插件此前会把它原样塞给模板 → 模板 raise → 整次对话 500。现在必须变成 enable_thinking:false。
     const off = await request(`${ctx.proxy.origin}/v1/chat/completions`, {
       method: 'POST',
-      body: { model: LOCAL_MODEL_ID, messages: [{ role: 'user', content: 'hi' }], chat_template_kwargs: { enable_thinking: false } },
+      body: { model: LOCAL_MODEL_ID, messages: [{ role: 'user', content: 'hi' }], reasoning_effort: false },
     })
     assert.equal(off.status, 200)
     const offKwargs = JSON.parse(off.text)._echo.chat_template_kwargs
-    assert.equal(offKwargs.enable_thinking, false, '请求说 Off，插件不能改回 true')
-    assert.equal(offKwargs.preserve_thinking, true, 'preserve_thinking 仍由插件负责（dsh 没有这个开关）')
+    assert.equal(offKwargs.enable_thinking, false, '请求选 Off 时，即使插件开关开着也必须关掉思考')
+    assert.equal(offKwargs.reasoning_effort, undefined, '模板会 raise 的值绝不能发过去')
 
-    // 形态二：档位走顶层字段 → 必须下沉进 chat_template_kwargs，llama.cpp 只认那里。
+    // 形态二：档位走了顶层字段（dsh 的默认 openai 格式），且值不在模板支持表里。
     const leveled = await request(`${ctx.proxy.origin}/v1/chat/completions`, {
       method: 'POST',
       body: { model: LOCAL_MODEL_ID, messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'high' },
     })
     const kwargs = JSON.parse(leveled.text)._echo.chat_template_kwargs
-    assert.equal(kwargs.reasoning_effort, 'high', '档位必须落到 chat_template_kwargs 里，否则会被 llama-server 静默丢掉')
-    assert.equal(kwargs.enable_thinking, true, '给了档位就是想思考，插件补上默认开启')
+    assert.equal(kwargs.enable_thinking, true, '选了档位就是要思考')
+    assert.equal(
+      kwargs.reasoning_effort,
+      'xhigh',
+      '假服务器声明的模板只认 xhigh/medium/low，high 必须被映射成 xhigh（原样发会 500）',
+    )
   } finally {
     await teardown(ctx)
   }

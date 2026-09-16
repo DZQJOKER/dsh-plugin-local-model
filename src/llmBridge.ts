@@ -42,6 +42,44 @@ export function buildRouteSpec(config: ResolvedConfig, baseURL: string): RouteSp
   }
 }
 
+/**
+ * 告诉 dsh「这个模型的思考档位该怎么下发」。
+ *
+ * **不声明这一块，滑杆就是个摆设**：pi-ai 只在 `model.reasoning` 为真时才走思考分支，
+ * 模型有没有推理能力又完全由 profile 里的 `reasoningEfforts` 决定 ——
+ * 我们既没声明、dsh 的内置目录里也没有 `local` 这个模型，于是 pi-ai 什么思考参数都不发。
+ * 用户看到的现象就是「推理等级选哪个都没反应」（2026-09-16 实测）。
+ *
+ * `thinkingFormat: 'chat-template'` 让 dsh 把档位写进 `chat_template_kwargs`，
+ * 而这正是 llama.cpp **唯一**认的通道；同样的值放在顶层 `reasoning_effort` 会被它静默丢掉。
+ */
+const THINKING_COMPAT = {
+  thinkingFormat: 'chat-template',
+  chatTemplateKwargs: {
+    // 档位开关：Off 档位下发 false，其余档位 true。
+    enable_thinking: { $var: 'thinking.enabled' },
+    // 档位本身。omitWhenOff 保证选 Off 时不发这个字段。
+    reasoning_effort: { $var: 'thinking.effort', omitWhenOff: true },
+  },
+}
+
+/**
+ * 档位 → 线上写法。
+ *
+ * 直接用 **llama.cpp 自己的词汇**（minimal/low/medium/high/xhigh/max），不做模型专用的猜测：
+ * 传一个模板没定义的档位名有可能在模板层直接报错，而「哪个模型定义了哪几档」只有模型自己知道。
+ * `off: null` = 该档位不下发值，正是 dsh 侧「不发参数即为不思考」的正确表达。
+ */
+const REASONING_EFFORTS: Record<string, string | null> = {
+  off: null,
+  minimal: 'minimal',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'xhigh',
+  max: 'max',
+}
+
 /** 生成 pi-ai 路由 profile（对应 settings.yaml 里 llm-pi-ai.providers.<route>）。 */
 export function buildRouteProfile(spec: RouteSpec): Record<string, unknown> {
   const profile: Record<string, unknown> = {
@@ -49,12 +87,15 @@ export function buildRouteProfile(spec: RouteSpec): Record<string, unknown> {
     api: 'openai-completions',
     baseURL: spec.baseURL,
     streamIdleTimeoutMs: spec.streamIdleTimeoutMs,
+    compat: THINKING_COMPAT,
     models: [
       {
         id: spec.modelId,
         name: spec.modelName,
         contextWindow: spec.contextWindow,
         maxTokens: spec.maxTokens,
+        // 声明推理能力 + 档位映射：这一步决定 dsh 的滑杆是否连到模型。
+        reasoningEfforts: REASONING_EFFORTS,
       },
     ],
   }
@@ -72,6 +113,16 @@ export function renderRouteYaml(spec: RouteSpec): string {
     '      api: openai-completions',
     `      baseURL: ${spec.baseURL}`,
     `      streamIdleTimeoutMs: ${spec.streamIdleTimeoutMs}`,
+    '      # 推理档位：让 dsh 的「推理等级」滑杆把档位写进 chat_template_kwargs',
+    '      # （llama.cpp 只认这个通道；顶层 reasoning_effort 会被静默丢掉）。',
+    '      compat:',
+    `        thinkingFormat: ${THINKING_COMPAT.thinkingFormat}`,
+    '        chatTemplateKwargs:',
+    '          enable_thinking:',
+    '            $var: thinking.enabled',
+    '          reasoning_effort:',
+    '            $var: thinking.effort',
+    '            omitWhenOff: true',
   ]
   if (spec.apiKeyEnv) lines.push(`      apiKeyEnv: ${spec.apiKeyEnv}`)
   lines.push('      models:')
@@ -79,6 +130,10 @@ export function renderRouteYaml(spec: RouteSpec): string {
   lines.push(`          name: ${spec.modelName}`)
   lines.push(`          contextWindow: ${spec.contextWindow}`)
   lines.push(`          maxTokens: ${spec.maxTokens}`)
+  lines.push('          reasoningEfforts:')
+  for (const [level, wire] of Object.entries(REASONING_EFFORTS)) {
+    lines.push(`            ${level}:${wire === null ? '' : ` ${wire}`}`)
+  }
   return lines.join('\n')
 }
 

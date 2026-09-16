@@ -29,6 +29,7 @@ import { sanitize } from '../lib/configStore.js'
 import { isChatCompletionPath, rewriteChatRequestBody, thinkChatTemplateKwargs } from '../lib/requestRewrite.js'
 import { diagnoseLoadFailure, extractEffectiveContext } from '../lib/llama/diagnose.js'
 import { shouldUnload } from '../lib/lifecycle.js'
+import { buildRouteProfile, buildRouteSpec, renderRouteYaml } from '../lib/llmBridge.js'
 
 let passed = 0
 let failed = 0
@@ -1025,6 +1026,45 @@ test('写入闸门认得这 13 个新字段，未知键仍然被丢弃', () => {
 })
 
 // ── 思考开关（请求体改写） ──────────────────────────────────────────────────
+section('路由 profile（推理档位）')
+
+const routeSpec = buildRouteSpec(resolveConfig(undefined, { DSH_HOME: '/tmp/dsh' }), 'http://127.0.0.1:18080/v1')
+
+test('路由 profile 声明了推理能力与档位映射（不声明滑杆就是摆设）', () => {
+  const model = buildRouteProfile(routeSpec).models[0]
+
+  assert.equal(
+    model.reasoningEfforts !== undefined,
+    true,
+    'pi-ai 只在模型被声明为推理模型时才走思考分支；不声明 reasoningEfforts，dsh 的「推理等级」什么都不会发',
+  )
+  assert.equal(model.reasoningEfforts.off, null, 'off 留空 = 该档位不下发值（不发参数即为不思考）')
+  for (const level of ['low', 'medium', 'high', 'xhigh']) {
+    assert.equal(model.reasoningEfforts[level], level, `档位 ${level} 的线上写法就用 llama.cpp 自己的词汇`)
+  }
+  assert.equal(Object.keys(model.reasoningEfforts).length, 7, 'llama.cpp 的七档全给上')
+})
+
+test('路由 profile 要求 dsh 走 chat-template 通道（llama.cpp 唯一认的那条）', () => {
+  const compat = buildRouteProfile(routeSpec).compat
+  assert.equal(compat.thinkingFormat, 'chat-template', '这个格式才会把档位写进 chat_template_kwargs')
+  assert.deepEqual(compat.chatTemplateKwargs.enable_thinking, { $var: 'thinking.enabled' })
+  assert.deepEqual(
+    compat.chatTemplateKwargs.reasoning_effort,
+    { $var: 'thinking.effort', omitWhenOff: true },
+    '档位走 thinking.effort；omitWhenOff 保证选 Off 时不发这个字段',
+  )
+})
+
+test('手写 YAML 里带上同样的声明（否则自动注册失败时滑杆又失灵）', () => {
+  const yaml = renderRouteYaml(routeSpec)
+  assert.match(yaml, /thinkingFormat: chat-template/)
+  assert.match(yaml, /\$var: thinking\.effort/)
+  assert.match(yaml, /reasoningEfforts:/)
+  assert.match(yaml, /^\s+off:\s*$/m, 'off 必须是空值（YAML 里读作 null）')
+  assert.match(yaml, /^\s+low: low$/m)
+})
+
 section('思考开关（请求体改写）')
 
 const policy = (enableThinking, preserveThinking) => ({ enableThinking, preserveThinking })
@@ -1033,6 +1073,57 @@ test('两个开关都显式下发（只下发 false 会让「打开」这一侧�
   assert.deepEqual(thinkChatTemplateKwargs(policy(true, true)), { enable_thinking: true, preserve_thinking: true })
   assert.deepEqual(thinkChatTemplateKwargs(policy(false, false)), { enable_thinking: false, preserve_thinking: false })
   assert.deepEqual(thinkChatTemplateKwargs(policy(false, true)), { enable_thinking: false, preserve_thinking: true })
+})
+
+test('开关开启只当默认值：请求自己说了 enable_thinking 就不覆盖（滑杆失效的回归防线）', () => {
+  // 这是 2026-09-16 用户实测到的问题：dsh 的「推理等级」选 Off 时会把 enable_thinking 写成 false，
+  // 而插件无条件改回 true —— 于是任何档位都等于「强制思考」。
+  const raw = JSON.stringify({
+    messages: [],
+    chat_template_kwargs: { enable_thinking: false, reasoning_effort: 'low' },
+  })
+  const body = JSON.parse(rewriteChatRequestBody(raw, policy(true, true)).body.toString('utf8'))
+  assert.equal(body.chat_template_kwargs.enable_thinking, false, '请求说 Off，插件不能改回 true')
+  assert.equal(body.chat_template_kwargs.reasoning_effort, 'low', '档位必须原样保留')
+  assert.equal(body.chat_template_kwargs.preserve_thinking, true, 'preserve_thinking 仍由插件决定')
+})
+
+test('开关开启 + 请求什么都没说：补上 enable_thinking=true（保住「打开就思考」的直觉）', () => {
+  const body = JSON.parse(rewriteChatRequestBody(JSON.stringify({ messages: [] }), policy(true, true)).body.toString('utf8'))
+  assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true, preserve_thinking: true })
+})
+
+test('开关关闭：无条件强制 false，请求说 true 也压下去', () => {
+  const raw = JSON.stringify({ messages: [], chat_template_kwargs: { enable_thinking: true } })
+  const body = JSON.parse(rewriteChatRequestBody(raw, policy(false, true)).body.toString('utf8'))
+  assert.equal(body.chat_template_kwargs.enable_thinking, false, '关掉开关是硬覆盖')
+})
+
+test('顶层 reasoning_effort 下沉进 chat_template_kwargs（llama.cpp 只认这个通道）', () => {
+  // 顶层字段会被 llama-server 静默丢掉：无报错、无日志，模型按自己的默认档位跑。
+  const raw = JSON.stringify({ messages: [], reasoning_effort: 'medium', chat_template_kwargs: { enable_thinking: true } })
+  const body = JSON.parse(rewriteChatRequestBody(raw, policy(true, true)).body.toString('utf8'))
+  assert.equal(body.chat_template_kwargs.reasoning_effort, 'medium')
+  assert.equal(body.chat_template_kwargs.enable_thinking, true)
+  assert.equal(body.reasoning_effort, 'medium', '顶层字段保持不动，只是多下发一份能被认出来的')
+})
+
+test('两边都有档位时以 chat_template_kwargs 里的为准（不在中途改用户的选择）', () => {
+  const raw = JSON.stringify({
+    messages: [],
+    reasoning_effort: 'high',
+    chat_template_kwargs: { reasoning_effort: 'xhigh' },
+  })
+  const body = JSON.parse(rewriteChatRequestBody(raw, policy(true, true)).body.toString('utf8'))
+  assert.equal(body.chat_template_kwargs.reasoning_effort, 'xhigh')
+})
+
+test('顶层档位是空串/非字符串时不下沉（别把垃圾塞进模板变量）', () => {
+  for (const bad of ['', '   ', 3, null, { effort: 'high' }]) {
+    const raw = JSON.stringify({ messages: [], reasoning_effort: bad })
+    const body = JSON.parse(rewriteChatRequestBody(raw, policy(true, true)).body.toString('utf8'))
+    assert.equal(body.chat_template_kwargs.reasoning_effort, undefined, `reasoning_effort=${JSON.stringify(bad)} 不该被下沉`)
+  }
 })
 
 test('只认对话补全路径（其它请求一律不改写）', () => {

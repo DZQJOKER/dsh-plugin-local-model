@@ -288,6 +288,16 @@ await step('日志给出了用户能照着做的下一步', async () => {
   assert.match(text, /未提供 tools 服务/, '宿主服务缺失时应显式降级并说明')
 })
 
+await step('启动日志里给出的路由配置带上了推理档位声明（滑杆能不能用就看它）', async () => {
+  // 宿主没有 llm 服务时，插件会把可粘贴的 settings.yaml 打进日志 —— 正好借它验证
+  // 「真实启动路径产出的路由配置」确实声明了推理能力与档位通道。
+  const text = logs.join('\n')
+  assert.match(text, /settings\.yaml/, '应当给出「手动写入 settings.yaml」的提示')
+  assert.match(text, /thinkingFormat: chat-template/, '缺了它 dsh 的「推理等级」滑杆就是个摆设')
+  assert.match(text, /\$var: thinking\.effort/, '档位必须走 chat_template_kwargs，顶层会被 llama.cpp 丢掉')
+  assert.match(text, /reasoningEfforts:/, '不声明推理能力，pi-ai 什么思考参数都不会发')
+})
+
 await step('设置页数据面：同源路由已挂载，state 能读出表单结构', async () => {
   const route = routes.find((r) => r.path === '/api/local-model')
   assert.ok(route, '应当注册 /api/local-model 前缀路由')

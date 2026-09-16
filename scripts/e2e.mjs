@@ -292,6 +292,35 @@ await step('思考开关：关闭时下发 false，并剥掉历史 think 后再�
   }
 })
 
+await step('思考开关：dsh 的推理档位不被抹平（Off 真能关掉，档位真能落到 kwargs）', async () => {
+  const ctx = await buildRuntime()
+  try {
+    await ctx.runtime.init()
+
+    // 形态一：dsh 的「推理等级 = Off」→ chat_template_kwargs.enable_thinking=false。
+    // 插件开关是默认开启的，这里必须原样放行 —— 曾经被无条件改回 true，滑杆形同虚设。
+    const off = await request(`${ctx.proxy.origin}/v1/chat/completions`, {
+      method: 'POST',
+      body: { model: LOCAL_MODEL_ID, messages: [{ role: 'user', content: 'hi' }], chat_template_kwargs: { enable_thinking: false } },
+    })
+    assert.equal(off.status, 200)
+    const offKwargs = JSON.parse(off.text)._echo.chat_template_kwargs
+    assert.equal(offKwargs.enable_thinking, false, '请求说 Off，插件不能改回 true')
+    assert.equal(offKwargs.preserve_thinking, true, 'preserve_thinking 仍由插件负责（dsh 没有这个开关）')
+
+    // 形态二：档位走顶层字段 → 必须下沉进 chat_template_kwargs，llama.cpp 只认那里。
+    const leveled = await request(`${ctx.proxy.origin}/v1/chat/completions`, {
+      method: 'POST',
+      body: { model: LOCAL_MODEL_ID, messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'high' },
+    })
+    const kwargs = JSON.parse(leveled.text)._echo.chat_template_kwargs
+    assert.equal(kwargs.reasoning_effort, 'high', '档位必须落到 chat_template_kwargs 里，否则会被 llama-server 静默丢掉')
+    assert.equal(kwargs.enable_thinking, true, '给了档位就是想思考，插件补上默认开启')
+  } finally {
+    await teardown(ctx)
+  }
+})
+
 await step('空闲一段时间后：自动卸载、进程被回收、端口被释放', async () => {  const ctx = await buildRuntime()
   try {
     await ctx.runtime.init()

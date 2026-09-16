@@ -18,6 +18,18 @@ llm-pi-ai:
       # 本地模型吐字慢（尤其 CPU 推理），流式空闲超时必须放宽，
       # 否则会出现「模型明明在生成，客户端却超时断开」。
       streamIdleTimeoutMs: 600000
+      # ── 推理档位（0.4.1 起）──────────────────────────────────────────────
+      # 不写这一段，dsh 的「推理等级」滑杆就是个摆设：pi-ai 认为这不是推理模型，
+      # 一个思考参数都不会发。写了之后 dsh 会把档位写进 chat_template_kwargs，
+      # 而那是 llama.cpp 唯一认的通道（顶层 reasoning_effort 会被静默丢掉）。
+      compat:
+        thinkingFormat: chat-template
+        chatTemplateKwargs:
+          enable_thinking:
+            $var: thinking.enabled
+          reasoning_effort:
+            $var: thinking.effort
+            omitWhenOff: true
       models:
         - id: local
           name: 本地模型
@@ -25,3 +37,12 @@ llm-pi-ai:
           # 手写配置时请自己跟上 —— 声明得比实际大，长会话会在中途断掉。
           contextWindow: 8192
           maxTokens: 8192
+          # 声明推理能力 + 档位映射。off 留空 = 该档位不下发值（不发参数即为不思考）。
+          reasoningEfforts:
+            off:
+            minimal: minimal
+            low: low
+            medium: medium
+            high: high
+            xhigh: xhigh
+            max: max

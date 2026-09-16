@@ -20,6 +20,14 @@ export interface ThinkPolicy {
 /** 承载模板变量的字段名。与 llama.cpp 的 OpenAI 兼容接口一致。 */
 export declare const CHAT_TEMPLATE_KWARGS_FIELD = "chat_template_kwargs";
 /**
+ * 推理档位的字段名。
+ *
+ * 关键事实（社区实测 + llama.cpp 维护者确认）：llama-server **不认顶层的 `reasoning_effort`**，
+ * 它会无报错、无日志地丢掉这个字段，模型就按自己的默认档位跑 ——
+ * 表现是「档位选了没反应，而且查不到任何线索」。唯一有效的通道是 `chat_template_kwargs.reasoning_effort`。
+ */
+export declare const REASONING_EFFORT_FIELD = "reasoning_effort";
+/**
  * 只改写对话补全。
  *
  * 其它路径（/v1/models、/health、/embeddings…）没有对话模板参数可言，
@@ -27,11 +35,14 @@ export declare const CHAT_TEMPLATE_KWARGS_FIELD = "chat_template_kwargs";
  */
 export declare function isChatCompletionPath(pathname: string): boolean;
 /**
- * 策略 → 模板变量。
+ * 策略 → 插件**希望**呈现的模板变量。
  *
- * 两个值都**显式**下发：开关打开就下发 true、关闭就下发 false。
- * 只下发 false 的话，「打开」这一侧就没有任何效果 —— 模板默认不思考的模型上，
- * 用户会发现开关拨过去什么都不发生。
+ * 注意这只是一份「意图」，不是最终写进请求体的东西：开关**开启**时的 `enable_thinking: true`
+ * 是**默认值**，请求里已经明确表达过就不该覆盖它 —— 真正的合并规则在 {@link mergeThinkKwargs}。
+ * （0.3.x 曾经直接把它整体覆盖上去，于是 dsh 的推理档位被抹平，见那里的注释。）
+ *
+ * 两个值都写出来而不是省略「真」的一侧，是因为这一份同时也被 `--chat-template-kwargs` 的
+ * 手工配置场景当作参考 —— 只给 false 会让人以为「打开」不需要下发任何东西。
  */
 export declare function thinkChatTemplateKwargs(policy: ThinkPolicy): Record<string, boolean>;
 export interface RewriteOutcome {

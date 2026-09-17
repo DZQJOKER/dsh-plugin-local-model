@@ -279,5 +279,37 @@ step('参数预设快照：草稿优先 / 空数字回落 / 字符串空值保�
   )
 })
 
+/*
+ * 布局几何：设置页「元素重叠」的根因是 flex/grid 子项缺少 minWidth: 0，
+ * 而这类问题只在某些屏幕宽度下才现形 —— 人肉点一遍覆盖不到。
+ * 这里既断言样式规则写全了，也把「常见分辨率下字段行放得下」算一遍。
+ */
+const layout = await import(pathToFileURL(path.join(projectRoot, 'client', 'src', 'layoutCheck.js')).href)
+const stylesSource = fs.readFileSync(path.join(projectRoot, 'client', 'src', 'styles.js'), 'utf8')
+
+step('布局：设置页的防重叠规则全部在样式表里', () => {
+  const problems = layout.checkLayout(stylesSource)
+  assert.deepEqual(problems, [], `样式表缺少防重叠约束：\n      ${problems.join('\n      ')}`)
+})
+
+step('布局：常见屏幕与分辨率下，设置项一行排得下（不会换行重叠）', () => {
+  const template = stylesSource.match(/field:\s*\{[^}]*gridTemplateColumns:\s*'([^']+)'/)?.[1]
+  assert.ok(template, '找不到 field 的列定义')
+  const gap = Number(stylesSource.match(/field:\s*\{[^}]*gap:\s*'6px (\d+)px'/)?.[1] ?? 10)
+  const required = layout.requiredFieldWidth(template, gap)
+
+  const tooNarrow = layout.SAMPLE_VIEWPORTS.filter(
+    (viewport) => layout.panelContentWidthFor(viewport) < required,
+  )
+  assert.deepEqual(
+    tooNarrow,
+    [],
+    `这些宽度下设置面板装不下 ${required}px 的字段行：${tooNarrow.join(' / ')}`,
+  )
+  // 把「刚好最窄的那一档」也算出来，改动模板时能立刻看到余量还剩多少。
+  const narrowest = Math.min(...layout.SAMPLE_VIEWPORTS.map((v) => layout.panelContentWidthFor(v)))
+  assert.ok(narrowest > required, `最窄内容区 ${narrowest}px 必须大于字段行需求 ${required}px`)
+})
+
 console.log(`\n通过 ${passed}，失败 ${failed}`)
 process.exit(failed === 0 ? 0 : 1)

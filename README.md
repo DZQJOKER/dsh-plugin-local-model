@@ -12,7 +12,28 @@
 
 ## 更新日志
 
-- **0.5.1** — 修掉设置页**元素重叠**（三处，都是「在某些屏幕宽度下才现形」的布局问题）。
+- **0.5.2** — 修掉设置页**透明重叠**。**0.5.1 的诊断是错的** —— 那三处几何问题确实存在、也确实修好了，
+  但它们不是用户看到「字压字」的原因。真正根因是**插件引用了 DSH 里根本不存在的 CSS 变量**：
+  插件整套用的是 `--color-background-primary` / `--color-border-tertiary` / `--color-text-primary`
+  这一组（Claude / Cursor 风格的通用 token），而宿主 DSH 只提供一套 `--dsw-*`
+  （全量扫 `app.asar` 的 21810 个文件，上述 `--color-*` 的**定义数都是 0**）。
+  `var(--x, fallback)` 在变量不存在时**静默**退回 fallback，于是：
+  ① `card` 与底部保存条的 fallback 写的是 `'transparent'` → **它们真的是透明的**，
+  下层「运行状态」卡片的文字（当前模型 / 进程 / 入口 / 模型总数 / 推理档位 / 多 Token 预测 / 视觉投影）
+  直接透上来；② 置顶预设条的 fallback 是 `'#fff'` → 浅色主题下**白底等于面板白底**，
+  眼睛看仍是「透明」；③ 输入框 / 下拉框的 `--color-background-secondary` 也落空到 `transparent`，
+  在卡片上是一块「看不见底」的区域；④ 深色主题下 `--color-text-primary` → `#111`，
+  主按钮变成黑底黑字。**修复**：颜色体系整体迁到 `--dsw-*`
+  （面板底 `--dsw-alias-bg-layer-2`，与宿主 `.MI-_Aa_panel` 同色；边框 `--dsw-alias-border-l1..l4`；
+  文字 `--dsw-alias-label-*`；语义色 `--dsw-alias-state-*`），并给所有「会挡住下层内容」的容器
+  补上不透明背景。**另修两处连带问题**：⑤ 置顶条与保存条的横向负 margin ——
+  `.options` 左右各有 24px 内边距，sticky 元素默认只盖内容区宽度，两侧那 24px 缝里滚过去的内容会直接露出来
+  （旧版保存条 `padding: '10px 0'` 时连上下都有 10px 缝，「当前模型」就是从这条缝里透出来的）；
+  ⑥ 状态徽章底色改用 `color-mix` 从前景色兑出，深色主题下不再出现「浅底浅字」。
+  `client/src/layoutCheck.js` 新增**变量白名单**与**透明度**两类断言，
+  并加了一条**反向验证**（拿有 bug 的坏样本必须报错）—— 因为这类探测最大的风险是
+  「规则永远不触发」的假阴性，那比没有规则更危险。
+- **0.5.1** — 修掉设置页**元素重叠**的几何成因（三处，都是「在某些屏幕宽度下才现形」的布局问题）。
   根因是 Host 设置面板实测只有 **564px** 可用宽度（面板 800 − 左侧导航 188 − 内边距 48），
   而客户端把内容区写成了 `maxWidth: 720`，**比可用宽度还宽 156px**：
   ① 字段行是 `grid` 三列，第二列写的是裸 `1fr` —— grid 的自动最小尺寸默认 `auto`，
@@ -28,6 +49,7 @@
   元信息网格的 `minmax(220px, 1fr)` 硬下限在窄面板下整块溢出（现 `minmax(0, 220px)`）。
   **只改样式，不动任何组件结构、路由与交互**；新增 `client/src/layoutCheck.js` 把这几条
   几何约束做成断言，`client-check` 会在常见分辨率下逐个验算「设置项一行排得下」。
+  ⚠️ 透明背景问题**不在**这一版的修复范围内，见 0.5.2。
 - **0.5.0** — 新增**参数预设**：把整套加载/推理参数（含选中的模型与视觉投影）存成带名字的条目，
   可存多组、可重命名、可覆盖、可删除，点一下即切换。预设条固定在**设置页顶部**，
   滚到参数区也能直接切。预设只收「参数」不收「环境」—— 端口、监听地址、模型/运行时目录、
@@ -212,8 +234,40 @@ node scripts/fetch-llama.mjs --dry-run       # 只预览要下载哪个包
    字段行 `minmax(140px, 190px) 1fr auto` 的最小需求约 420px，面板 ≤800px 时必现。
 
 置顶那条 `position: sticky` 另有三点必须一起满足（原因写在 `styles.js` 的 `cardPinned` 注释里）：
-实色背景（遮住 sticky 上方那条能滚动的透明缝）、顶部内边距（让开面板的 32px 圆角）、
+不透明背景（遮住下层内容）、横向盖满 `.options` 的 24px 内边距（两侧不留缝）、
 `isolation: isolate`（自建层叠上下文，不与面板标题栏抢层级）。
+
+### 颜色变量：只能用 `--dsw-*`（0.5.2 起，血泪条款）
+
+**DSH 里不存在任何 `--color-*` 变量。** 宿主 `@deepseek-ai/dsh-client-ui-theme` 只定义一套 `--dsw-*`：
+
+```
+--dsw-alias-bg-base / bg-layer-1|2|3 / bg-overlay / bg-mask-1
+--dsw-alias-border-l1|l2|l3|l4
+--dsw-alias-label-primary|secondary|tertiary|dimmed|caption
+--dsw-alias-button-primary-fill|hover / button-ghost-active-fill|border
+--dsw-alias-interactive-bg-hover
+--dsw-alias-state-error|success|warn-primary / -secondary / -tertiary
+--dsw-static-neutral-bluish-{00,50,60,75,100,…,1000} 等静态色板
+```
+
+写完 `var(--color-background-primary, 'transparent')` 这种代码时，**不会有任何报错、任何警告** ——
+变量不存在，`var()` 直接退回 fallback，而 fallback 是手写的、很容易写成 `transparent`。
+症状就是「元素是透明的、下层文字透上来」，然后你会去怀疑 `z-index`、`position`、
+层叠上下文……**全都不对**，因为根本没东西被画出来。
+
+三条规则（`client-check.mjs` 会拦）：
+
+1. **只用 `--dsw-*` / `--font-*` / `--dsh-*`**，其余前缀一律视为宿主不提供。
+2. **会挡住下层内容的容器（`card` / `cardPinned` / `footer`）背景必须不透明。**
+   面板底统一用 `--dsw-alias-bg-layer-2` —— 宿主 `.MI-_Aa_panel` 自己就是这个值，
+   两边同色才能让 sticky 元素「融进」面板、看不出接缝。
+3. **sticky 条要盖满 `.options` 的横向内边距**：`marginLeft/Right: -24` + `paddingLeft/Right: 24`。
+   否则卡片两侧各留 24px 缝，滚动时下层内容会从缝里穿过去。
+
+> 排查这类问题的通用手法：从 `app.asar` 全量扫变量定义（`find.mjs` / `pick.mjs` 在
+> `D:\日常工作区\_dev-tools\dsh-asar-tools\`）。只要某变量在 21810 个文件里出现次数为 0，
+> 它就是**不存在**，代码里每一次 `var()` 都在走 fallback。
 
 ### 参数预设（0.5.0 新增）
 
@@ -635,12 +689,14 @@ disabled ──启用──▶ idle ──首条对话──▶ starting ──�
 | 回复一卡一卡然后断开 | 设置页或路由里的 `streamIdleTimeoutMs` 太短（本地推理慢），参考第 5 节调到 600000 |
 | 显存没释放 | 看 `local_model` 工具或 `/local-model status` 的状态；确认 `idleUnloadMinutes` 不是 0 |
 | 改完设置不生效 | 端口/目录类改动需重启 dsh；模型/参数类改动被空闲卸载后或 `/local-model reload` 后会按新值生效 |
-| 找不到「参数预设」那一块，或点了预设没反应 | 它在 **设置 → 本地模型** 页最上面（置顶那条）。一片预设都没有时只有输入框 —— 输入名字点「保存为预设」。升级后没出现先看状态卡里的版本号是否为 `v0.5.1`，再跑 `npm run verify` |
+| 找不到「参数预设」那一块，或点了预设没反应 | 它在 **设置 → 本地模型** 页最上面（置顶那条）。一片预设都没有时只有输入框 —— 输入名字点「保存为预设」。升级后没出现先看状态卡里的版本号是否为 `v0.5.2`，再跑 `npm run verify` |
 | 点预设提示「找不到这个预设，可能已被删除」 | 另一个标签页/窗口把这组预设删掉了。点「刷新状态」重新拉一次即可 |
 | 预设里怎么没有端口 / 模型目录 / 密钥 | **设计如此，不是漏了**：这 9 项属于「这台机器」而不属于「这套参数」，切换预设时保持原样（否则切一次参数就把端口换了）。作用域见第 4 节「参数预设」 |
 | 应用预设之后模型被卸载并重新加载了一次 | 预期行为：它与「保存设置」走同一条路径 —— 参数变了就卸载，下次对话按新参数加载 |
-| 设置页有元素叠在一起 / 输入框被「默认」按钮压住 | `0.5.1` 已修（面板可用宽度只有 564px，旧的 `maxWidth: 720` + 裸 `1fr` 三列在窄窗口下会换行重叠）。若升级后仍有，先确认状态卡里的版本号是 `v0.5.1`；再跑 `node scripts/client-check.mjs`，两套「布局」用例会直接指出是哪条样式约束被破坏了 |
-| 预设条滚起来上边缘被切 / 盖住面板标题 | 同上，`0.5.1` 已修。相关的三条约束（实色背景、顶部内边距、`isolation: isolate`）见 `client/src/styles.js` 的 `cardPinned` |
+| 设置页有元素叠在一起 / 输入框被「默认」按钮压住 | `0.5.1` 已修（面板可用宽度只有 564px，旧的 `maxWidth: 720` + 裸 `1fr` 三列在窄窗口下会换行重叠）。若升级后仍有，先确认状态卡里的版本号是 `v0.5.2`；再跑 `node scripts/client-check.mjs`，两套「布局」用例会直接指出是哪条样式约束被破坏了 |
+| 预设条滚起来上边缘被切 / 盖住面板标题 | 同上，`0.5.1` 已修。相关的三条约束（不透明背景、横向盖满 24px 内边距、`isolation: isolate`）见 `client/src/styles.js` 的 `cardPinned` |
+| **整块设置项是半透明的，下层卡片的文字透上来叠字** | `0.5.2` 已修。根因是插件引用了宿主不存在的 `--color-*` 变量，`var()` 静默落到 `transparent` 兜底（详见「颜色变量」一节）。先确认版本号是 `v0.5.2`；再跑 `node scripts/client-check.mjs`，「主题」三条用例会直接报出是哪个变量或哪个容器背景不对 |
+| 深色主题下主按钮黑底黑字 / 输入框看不见底 | 同上，`0.5.2` 已修（`--color-text-primary` 落空到 `#111`、`--color-background-secondary` 落空到 `transparent`） |
 | 预设建不出来（说名称重复 / 为空） | 名称不能为空、不能重复（不区分大小写），最长 40 字，最多 100 组。换个名字或先删掉旧的 |
 | 面板提示「预设文件解析失败，已按「没有预设」处理」 | `state/presets.json` 被外部改坏了。插件不会因此起不来、模型加载也不受影响，只是那批预设读不回来；删掉该文件即可从头再来 |
 
@@ -651,7 +707,7 @@ npm run build       # tsc → lib/，再打包客户端 bundle → client/client
 npm run build:client # 只重打浏览器半侧（改 client/src 后用它）
 npm run verify      # 清单自检：bundle 合法性 + 客户端半侧合规 + 在哪些 profile 装了却没生效
 npm run verify:llama # 参数验收：拿本机的 llama-server 真起一次，确认它接受插件下发的参数
-npm test            # 下面五套全跑（共 177 项：单测 118 + e2e 13 + 加载 32 + 客户端 14 + 清单 12 项检查）
+npm test            # 下面五套全跑（共 180 项：单测 118 + e2e 13 + 加载 32 + 客户端 17 + 清单 12 项检查）
 npm run test:client # 浏览器 bundle：用假 loader 真加载一遍，校验格式、插槽注册与预设条契约
 npm run test:load   # 类宿主跑 apply()：目录骨架、代理端口、设置面板数据面、参数预设与安全约束
 npm run test:unit   # 参数拼装 / 能力探测 / 分片归并 / 路径与配置解析 / 参数预设读写
@@ -731,7 +787,7 @@ client/src/          浏览器半侧
 ├── section.jsx       面板：预设条、状态、模型/视觉投影下拉（MTP 开启时置灰）、按 schema 渲染的分组表单
 ├── presets.jsx       置顶的「参数预设」条：保存 / 应用 / 改名 / 覆盖 / 删除
 ├── presetSnapshot.js 预设快照的纯逻辑（可被 node 直接单测）
-├── layoutCheck.js    布局几何自检规则（防元素重叠，被 client-check 调用）
+├── layoutCheck.js    布局几何 + 主题变量自检规则（防元素重叠 / 防宿主变量用错，被 client-check 调用）
 ├── api.js            同源 fetch
 └── styles.js         内联样式（不引 CSS modules，少一个加载失败面）
 scripts/

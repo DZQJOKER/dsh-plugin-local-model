@@ -91,6 +91,18 @@ window.__ModuleLoader__.load({
 
 		// client/src/styles.js
 		var c = (name, fallback) => `var(${name}, ${fallback})`;
+		var SURFACE = c("--dsw-alias-bg-layer-2", "#fff");
+		var SURFACE_RAISED = c("--dsw-alias-bg-layer-1", "#fff");
+		var LABEL = c("--dsw-alias-label-primary", "#0f1115");
+		var LABEL_2 = c("--dsw-alias-label-secondary", "#61666b");
+		var BORDER_1 = c("--dsw-alias-border-l1", "rgba(0,0,0,0.04)");
+		var BORDER_2 = c("--dsw-alias-border-l2", "#0000001a");
+		var BORDER_3 = c("--dsw-alias-border-l3", "#0000001f");
+		var BORDER_4 = c("--dsw-alias-border-l4", "#00000029");
+		var HOVER = c("--dsw-alias-interactive-bg-hover", "rgba(38,49,72,0.06)");
+		var DANGER = c("--dsw-alias-state-error-primary", "#ec1313");
+		var SUCCESS = c("--dsw-alias-state-success-primary", "#22c55e");
+		var WARN = c("--dsw-alias-state-warn-primary", "#f59e0b");
 		var S = {
 		  /**
 		   * 内容区**不写死最大宽度**。
@@ -100,16 +112,25 @@ window.__ModuleLoader__.load({
 		   * 原先这里写 720（比可用宽度还宽 156px），于是每张卡片都横向溢出 24px、
 		   * 字段行被压到换行（见 `field` 的注释）。
 		   * 宽度交给面板自己决定，这里只保证不撑破它。
+		   *
+		   * `paddingBottom` 64 是为了让最后一个卡片滚到底时不被保存条压住 ——
+		   * 保存条是 sticky 的、会一直在视口底部。
 		   */
-		  wrap: { padding: "4px 2px 32px", maxWidth: "100%", boxSizing: "border-box", minWidth: 0 },
+		  wrap: { padding: "4px 2px 64px", maxWidth: "100%", boxSizing: "border-box", minWidth: 0 },
 		  h2: { fontSize: 15, fontWeight: 500, margin: "0 0 4px" },
-		  lede: { fontSize: 12.5, opacity: 0.7, margin: "0 0 16px", lineHeight: 1.6 },
+		  lede: { fontSize: 12.5, opacity: 0.72, margin: "0 0 16px", lineHeight: 1.6 },
+		  /**
+		   * 普通卡片。
+		   *
+		   * ★ `background` 必须是**不透明**的：写 `transparent` 时，卡片内的说明文字会和
+		   *   滚动过程中从下面经过的另一张卡片叠在一起（上一版的真实故障）。
+		   */
 		  card: {
-		    border: `1px solid ${c("--color-border-tertiary", "rgba(0,0,0,0.12)")}`,
+		    border: `1px solid ${BORDER_1}`,
 		    borderRadius: 12,
 		    padding: "14px 16px",
 		    marginBottom: 14,
-		    background: c("--color-background-primary", "transparent"),
+		    background: SURFACE,
 		    boxSizing: "border-box",
 		    minWidth: 0
 		  },
@@ -117,15 +138,18 @@ window.__ModuleLoader__.load({
 		   * 置顶卡：参数预设那一块。
 		   *
 		   * 用 sticky 把自己钉在滚动容器（宿主面板的 `.options`，`overflow-y:auto`）顶部。
-		   * 有三个必须一起处理的细节，否则它会和面板本身「撞车」：
+		   * 有四个必须一起处理的细节，否则它会和面板本身「撞车」：
 		   *
 		   *   1. sticky 的包含块是 `.options` 的**内边距盒**，`top:0` 相对的是它 ——
 		   *      而面板上圆角（border-radius: 32px）恰好压在这个位置。滚起来之后
-		   *      卡片上边缘会被圆角切掉、盖住面板标题栏，所以这里留出 `paddingTop` 当缓冲。
-		   *   2. `.options` 的 `padding: 0 24px 24px` 上边距是 0，那 24px 属于它自己的 padding、
-		   *      不被 sticky 元素认领，于是卡片上方会留一条**能滚动的透明缝**，下层卡片从缝里透出来。
-		   *      所以这里必须给**实色背景**把穿透挡掉（取不到主题色时回落到不透明白）。
-		   *   3. `isolation: isolate` 新建层叠上下文，`zIndex` 只在本组件内比较，
+		   *      卡片上边缘会被圆角切掉，所以这里留出 `paddingTop` 当缓冲。
+		   *   2. `.options` 的 `padding: 0 24px 24px` 上边距是 0，那部分属于它自己的 padding、
+		   *      不被 sticky 元素认领，卡片滚动时会被裁切。
+		   *   3. 背景必须**不透明且与面板同色**（`--dsw-alias-bg-layer-2`）。写透明、
+		   *      或写一个和面板不同的白，下层「运行状态」卡片就会透出来 —— 这就是本 bug。
+		   *      横向用负 margin 把 `.options` 的 24px 内边距**盖满**，
+		   *      否则卡片左右两侧各留 24px 缝，下面滚过去的内容会从缝里露出来。
+		   *   4. `isolation: isolate` 新建层叠上下文，`zIndex` 只在本组件内比较，
 		   *      不会再去和宿主面板的标题栏抢层级。
 		   */
 		  cardPinned: {
@@ -133,23 +157,30 @@ window.__ModuleLoader__.load({
 		    top: 0,
 		    zIndex: 3,
 		    marginTop: 0,
-		    paddingTop: 12,
-		    background: c("--color-background-primary", "#fff"),
-		    isolation: "isolate"
+		    marginLeft: -24,
+		    marginRight: -24,
+		    paddingLeft: 24,
+		    paddingRight: 24,
+		    paddingTop: 14,
+		    background: SURFACE,
+		    isolation: "isolate",
+		    /* 和面板同色，上边不需要描边；只在下方留一条分隔线表示「这是浮在上面的」。 */
+		    borderWidth: "0 0 1px 0",
+		    borderRadius: 0
 		  },
 		  chipRow: { display: "flex", flexWrap: "wrap", gap: 8, margin: "0 0 12px", minWidth: 0 },
 		  chip: {
 		    display: "inline-flex",
 		    alignItems: "stretch",
 		    borderRadius: 9,
-		    border: `1px solid ${c("--color-border-secondary", "rgba(0,0,0,0.22)")}`,
+		    border: `1px solid ${BORDER_4}`,
 		    overflow: "hidden",
 		    maxWidth: "100%"
 		  },
-		  /** 当前生效的那一个：加粗边框 + 主题主色描边，一眼看出「现在跑的是它」。 */
+		  /** 当前生效的那一个：加粗边框 + 主色描边，一眼看出「现在跑的是它」。 */
 		  chipActive: {
-		    borderColor: c("--color-text-primary", "#111"),
-		    boxShadow: `inset 0 0 0 1px ${c("--color-text-primary", "#111")}`
+		    borderColor: LABEL,
+		    boxShadow: `inset 0 0 0 1px ${LABEL}`
 		  },
 		  chipLabel: {
 		    display: "inline-flex",
@@ -179,7 +210,7 @@ window.__ModuleLoader__.load({
 		    lineHeight: "26px",
 		    padding: "0 7px",
 		    border: "none",
-		    borderLeft: `1px solid ${c("--color-border-tertiary", "rgba(0,0,0,0.1)")}`,
+		    borderLeft: `1px solid ${BORDER_3}`,
 		    background: "transparent",
 		    color: "inherit",
 		    opacity: 0.7,
@@ -187,65 +218,6 @@ window.__ModuleLoader__.load({
 		    flex: "0 0 auto"
 		  },
 		  presetRow: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 12, minWidth: 0 },
-		  statusRow: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
-		  h2: { fontSize: 15, fontWeight: 500, margin: "0 0 4px" },
-		  lede: { fontSize: 12.5, opacity: 0.7, margin: "0 0 16px", lineHeight: 1.6 },
-		  card: {
-		    border: `1px solid ${c("--color-border-tertiary", "rgba(0,0,0,0.12)")}`,
-		    borderRadius: 12,
-		    padding: "14px 16px",
-		    marginBottom: 14,
-		    background: c("--color-background-primary", "transparent")
-		  },
-		  /**
-		   * 置顶卡：参数预设那一块。
-		   *
-		   * 用 sticky 把自己钉在滚动容器顶部（与底部保存条同一套做法），滚到参数区时预设条依然在，
-		   * 「随时切换」才成立。背景取主题的 primary，取不到时回落到 transparent —— 与底部保存条一致。
-		   */
-		  cardPinned: {
-		    position: "sticky",
-		    top: 0,
-		    zIndex: 2
-		  },
-		  chipRow: { display: "flex", flexWrap: "wrap", gap: 8, margin: "0 0 12px" },
-		  chip: {
-		    display: "inline-flex",
-		    alignItems: "stretch",
-		    borderRadius: 9,
-		    border: `1px solid ${c("--color-border-secondary", "rgba(0,0,0,0.22)")}`,
-		    overflow: "hidden"
-		  },
-		  /** 当前生效的那一个：加粗边框 + 主题主色描边，一眼看出「现在跑的是它」。 */
-		  chipActive: {
-		    borderColor: c("--color-text-primary", "#111"),
-		    boxShadow: `inset 0 0 0 1px ${c("--color-text-primary", "#111")}`
-		  },
-		  chipLabel: {
-		    display: "inline-flex",
-		    alignItems: "center",
-		    gap: 6,
-		    fontSize: 12.5,
-		    lineHeight: "26px",
-		    padding: "0 10px",
-		    border: "none",
-		    background: "transparent",
-		    color: "inherit",
-		    cursor: "pointer"
-		  },
-		  chipMeta: { fontSize: 10.5, opacity: 0.6 },
-		  chipIcon: {
-		    fontSize: 11.5,
-		    lineHeight: "26px",
-		    padding: "0 7px",
-		    border: "none",
-		    borderLeft: `1px solid ${c("--color-border-tertiary", "rgba(0,0,0,0.1)")}`,
-		    background: "transparent",
-		    color: "inherit",
-		    opacity: 0.7,
-		    cursor: "pointer"
-		  },
-		  presetRow: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 12 },
 		  statusRow: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
 		  badge: {
 		    display: "inline-flex",
@@ -272,7 +244,7 @@ window.__ModuleLoader__.load({
 		    fontSize: 12,
 		    minWidth: 0
 		  },
-		  metaLabel: { opacity: 0.6 },
+		  metaLabel: { opacity: 0.62 },
 		  mono: { fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5, wordBreak: "break-all" },
 		  actions: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 },
 		  button: {
@@ -280,9 +252,9 @@ window.__ModuleLoader__.load({
 		    lineHeight: "26px",
 		    padding: "0 12px",
 		    borderRadius: 8,
-		    border: `1px solid ${c("--color-border-secondary", "rgba(0,0,0,0.22)")}`,
+		    border: `1px solid ${BORDER_4}`,
 		    background: "transparent",
-		    color: "inherit",
+		    color: LABEL,
 		    cursor: "pointer"
 		  },
 		  buttonPrimary: {
@@ -291,8 +263,8 @@ window.__ModuleLoader__.load({
 		    padding: "0 14px",
 		    borderRadius: 8,
 		    border: "1px solid transparent",
-		    background: c("--color-text-primary", "#111"),
-		    color: c("--color-background-primary", "#fff"),
+		    background: c("--dsw-alias-button-primary-fill", "#0f1115"),
+		    color: c("--dsw-alias-button-floating-fill", "#fff"),
 		    cursor: "pointer"
 		  },
 		  buttonDisabled: { opacity: 0.5, cursor: "default" },
@@ -305,7 +277,7 @@ window.__ModuleLoader__.load({
 		   *   grid 自动最小尺寸的默认值是 `auto`，即「不小于内容最小宽度」——
 		   *   `1fr` 那一列于是**拒绝被压到输入框的 min-content 以下**。
 		   *   改成 0 之后格子才能真正收缩（前提是控件本身也 `minWidth: 0`，见 input/select）。
-		   *   这是原先「输入框与『默认』按钮叠在一起」的直接原因：可用宽度不足以容纳
+		   *   这是「输入框与『默认』按钮叠在一起」的直接原因：可用宽度不足以容纳
 		   *   `140(标签下限) + 12 + 输入框min-content + 12 + 44(按钮)` 时，grid 把第二列挤到
 		   *   下一行，按钮回到右侧，两行内容在视觉上就压住了。
 		   *   最小需求现在降到 `140 + 10 + 0 + 10 + 44 ≈ 204px`，任何常见分辨率都富余。
@@ -319,7 +291,7 @@ window.__ModuleLoader__.load({
 		    gap: "6px 10px",
 		    alignItems: "start",
 		    padding: "7px 0",
-		    borderTop: `1px solid ${c("--color-border-tertiary", "rgba(0,0,0,0.08)")}`,
+		    borderTop: `1px solid ${BORDER_1}`,
 		    minWidth: 0
 		  },
 		  /**
@@ -339,7 +311,14 @@ window.__ModuleLoader__.load({
 		    lineHeight: 1.4
 		  },
 		  /** 说明横跨控件与按钮两列；同样要能压缩，否则长参数说明会把卡片顶宽。 */
-		  desc: { fontSize: 11.5, opacity: 0.6, lineHeight: 1.5, marginTop: 4, gridColumn: "2 / 4", minWidth: 0, overflowWrap: "anywhere" },
+		  desc: { fontSize: 11.5, opacity: 0.62, lineHeight: 1.5, marginTop: 4, gridColumn: "2 / 4", minWidth: 0, overflowWrap: "anywhere" },
+		  /**
+		   * 输入框 / 下拉框。
+		   *
+		   * ★ `background` 用 `--dsw-alias-bg-layer-1`（浅色主题 `#fff`）而不是透明：
+		   *   宿主变量缺失时旧写法落到 `transparent`，输入框在卡片上就是「看不见底」的一块，
+		   *   用户会以为渲染坏了。这里给真实底色 + fallback `#fff` 兜住。
+		   */
 		  input: {
 		    minWidth: 0,
 		    fontSize: 12.5,
@@ -348,8 +327,8 @@ window.__ModuleLoader__.load({
 		    width: "100%",
 		    boxSizing: "border-box",
 		    borderRadius: 7,
-		    border: `1px solid ${c("--color-border-secondary", "rgba(0,0,0,0.22)")}`,
-		    background: c("--color-background-secondary", "transparent"),
+		    border: `1px solid ${BORDER_4}`,
+		    background: SURFACE_RAISED,
 		    color: "inherit"
 		  },
 		  textarea: {
@@ -362,15 +341,15 @@ window.__ModuleLoader__.load({
 		    minHeight: 48,
 		    resize: "vertical",
 		    fontFamily: "var(--font-mono, ui-monospace, monospace)",
-		    border: `1px solid ${c("--color-border-secondary", "rgba(0,0,0,0.22)")}`,
-		    background: c("--color-background-secondary", "transparent"),
+		    border: `1px solid ${BORDER_4}`,
+		    background: SURFACE_RAISED,
 		    color: "inherit"
 		  },
 		  checkboxRow: { display: "flex", alignItems: "center", gap: 8, minWidth: 0, flexWrap: "wrap" },
 		  overridden: {
 		    fontSize: 10.5,
 		    opacity: 0.75,
-		    border: `1px solid ${c("--color-border-tertiary", "rgba(0,0,0,0.15)")}`,
+		    border: `1px solid ${BORDER_3}`,
 		    borderRadius: 999,
 		    padding: "0 6px",
 		    lineHeight: "16px"
@@ -383,11 +362,20 @@ window.__ModuleLoader__.load({
 		    minWidth: 0,
 		    boxSizing: "border-box",
 		    borderRadius: 7,
-		    border: `1px solid ${c("--color-border-secondary", "rgba(0,0,0,0.22)")}`,
-		    background: c("--color-background-secondary", "transparent"),
+		    border: `1px solid ${BORDER_4}`,
+		    background: SURFACE_RAISED,
 		    color: "inherit"
 		  },
 		  modelMeta: { fontSize: 11.5, opacity: 0.65, marginTop: 6, lineHeight: 1.5 },
+		  /**
+		   * 底部保存条（保存 / 放弃修改 / 恢复默认）。
+		   *
+		   * ★ 横向负 margin + 同额 padding：`.options` 左右各有 24px 内边距，
+		   *   sticky 元素默认只覆盖**内容区**宽度，两侧那 24px 缝里滚过去的内容会直接露出来
+		   *   （旧版 `padding: '10px 0'` 时更明显，连上下都有 10px 缝）。
+		   *   用 `marginLeft/Right: -24` + `paddingLeft/Right: 24` 把缝盖满。
+		   * ★ 背景必须不透明：写 `transparent` 时下方「当前模型」输入框会透过按钮显示出来。
+		   */
 		  footer: {
 		    display: "flex",
 		    alignItems: "center",
@@ -395,24 +383,37 @@ window.__ModuleLoader__.load({
 		    flexWrap: "wrap",
 		    position: "sticky",
 		    bottom: 0,
-		    padding: "10px 0",
-		    background: c("--color-background-primary", "transparent")
+		    zIndex: 3,
+		    marginLeft: -24,
+		    marginRight: -24,
+		    paddingLeft: 24,
+		    paddingRight: 24,
+		    paddingTop: 10,
+		    paddingBottom: 10,
+		    background: SURFACE,
+		    isolation: "isolate",
+		    borderTop: `1px solid ${BORDER_1}`
 		  },
 		  dirty: { fontSize: 12, opacity: 0.75 },
 		  banner: { fontSize: 12, lineHeight: 1.55, borderRadius: 8, padding: "8px 10px", marginBottom: 12 },
-		  error: { border: `1px solid ${c("--color-border-danger", "rgba(200,40,40,0.45)")}`, color: c("--color-text-danger", "#b02525") },
-		  notice: { border: `1px solid ${c("--color-border-success", "rgba(30,140,80,0.45)")}`, color: c("--color-text-success", "#1c7a48") },
+		  error: { border: `1px solid ${DANGER}`, color: DANGER, background: `color-mix(in srgb, ${DANGER} 8%, transparent)` },
+		  notice: { border: `1px solid ${SUCCESS}`, color: SUCCESS, background: `color-mix(in srgb, ${SUCCESS} 8%, transparent)` },
 		  /** 警告（橙）：与状态徽章里的 starting/stopping 同色，表示「能跑但要注意」。 */
-		  warn: { border: "1px solid rgba(154,98,9,0.45)", color: "#9a6209" },
-		  hint: { border: `1px solid ${c("--color-border-tertiary", "rgba(0,0,0,0.12)")}`, opacity: 0.85 }
+		  warn: { border: `1px solid ${WARN}`, color: c("--dsw-alias-state-warn-label", "#9a6209"), background: `color-mix(in srgb, ${WARN} 8%, transparent)` },
+		  hint: { border: `1px solid ${BORDER_2}`, opacity: 0.85 }
 		};
+		var pair = (fg) => ({
+		  fg,
+		  bg: `color-mix(in srgb, ${fg} 12%, transparent)`,
+		  border: `color-mix(in srgb, ${fg} 35%, transparent)`
+		});
 		var STATE_COLORS = {
-		  ready: { fg: "#1c7a48", bg: "rgba(28,122,72,0.12)", border: "rgba(28,122,72,0.35)" },
-		  starting: { fg: "#9a6209", bg: "rgba(154,98,9,0.12)", border: "rgba(154,98,9,0.35)" },
-		  stopping: { fg: "#9a6209", bg: "rgba(154,98,9,0.12)", border: "rgba(154,98,9,0.35)" },
-		  failed: { fg: "#b02525", bg: "rgba(176,37,37,0.12)", border: "rgba(176,37,37,0.35)" },
-		  idle: { fg: "#5a5a56", bg: "rgba(120,120,116,0.12)", border: "rgba(120,120,116,0.35)" },
-		  disabled: { fg: "#5a5a56", bg: "rgba(120,120,116,0.12)", border: "rgba(120,120,116,0.35)" }
+		  ready: pair(c("--dsw-alias-state-success-primary", "#22c55e")),
+		  starting: pair(c("--dsw-alias-state-warn-primary", "#f59e0b")),
+		  stopping: pair(c("--dsw-alias-state-warn-primary", "#f59e0b")),
+		  failed: pair(c("--dsw-alias-state-error-primary", "#ec1313")),
+		  idle: pair(c("--dsw-alias-label-secondary", "#61666b")),
+		  disabled: pair(c("--dsw-alias-label-secondary", "#61666b"))
 		};
 
 		// client/src/presets.jsx

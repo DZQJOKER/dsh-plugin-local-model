@@ -18,7 +18,7 @@ import { type LocalModelConfig } from './config.js';
 /** 诊断信息里显示的插件名。 */
 export declare const name = "local-model";
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export declare const PLUGIN_VERSION = "0.5.1";
+export declare const PLUGIN_VERSION = "0.5.2";
 /**
  * 硬依赖：无。
  *

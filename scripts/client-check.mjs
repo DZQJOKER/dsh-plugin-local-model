@@ -280,9 +280,13 @@ step('参数预设快照：草稿优先 / 空数字回落 / 字符串空值保�
 })
 
 /*
- * 布局几何：设置页「元素重叠」的根因是 flex/grid 子项缺少 minWidth: 0，
- * 而这类问题只在某些屏幕宽度下才现形 —— 人肉点一遍覆盖不到。
+ * 布局几何 + 主题变量：设置页「元素重叠」有两类根因，都只在真实宿主里才现形 ——
+ *   A. flex/grid 子项缺少 minWidth: 0，格子拒绝压缩（某些屏幕宽度下才出现）
+ *   B. 引用了宿主**不存在**的 CSS 变量，`var()` 静默落到 fallback；
+ *      fallback 若写 transparent，元素就是透明的 —— 这就是「透明重叠」
  * 这里既断言样式规则写全了，也把「常见分辨率下字段行放得下」算一遍。
+ * ★ 还必须反向验证一次：拿旧版（有 bug 的）样式表跑，探测必须报错。
+ *   否则规则可能永远不触发，给人「检查过了」的错觉。
  */
 const layout = await import(pathToFileURL(path.join(projectRoot, 'client', 'src', 'layoutCheck.js')).href)
 const stylesSource = fs.readFileSync(path.join(projectRoot, 'client', 'src', 'styles.js'), 'utf8')
@@ -290,6 +294,82 @@ const stylesSource = fs.readFileSync(path.join(projectRoot, 'client', 'src', 'st
 step('布局：设置页的防重叠规则全部在样式表里', () => {
   const problems = layout.checkLayout(stylesSource)
   assert.deepEqual(problems, [], `样式表缺少防重叠约束：\n      ${problems.join('\n      ')}`)
+})
+
+step('主题：只用宿主真实提供的 CSS 变量（--dsw-* / --font-*）', () => {
+  // 宿主 @deepseek-ai/dsh-client-ui-theme 只定义 --dsw-*；--color-* 那一套在 DSH 里不存在，
+  // 写了就会静默取 fallback。这条规则专门拦这个。
+  const unknown = layout.findUnknownVars(stylesSource)
+  assert.deepEqual(
+    unknown,
+    [],
+    `样式表引用了宿主未定义的变量：${unknown.join('、')}；` +
+      `宿主只提供 ${layout.ALLOWED_VAR_PREFIXES.join(' / ')}，其余会落到 fallback`,
+  )
+  assert.ok(
+    !/--color-[a-z-]+/.test(layout.stripComments(stylesSource)),
+    '样式表里不该出现 --color-* （宿主的变量名前缀是 --dsw-*）',
+  )
+})
+
+step('主题：会挡住下层内容的容器一律不透明（这就是「透明重叠」的成因）', () => {
+  // 逐条给出人话原因，方便出错时直接定位是哪个元素。
+  const reasons = {
+    cardPinned: '置顶的预设条透明时，下层「运行状态」卡片的文字会直接透上来',
+    footer: '底部保存条透明时，「当前模型」输入框会透过按钮显示出来',
+    card: '卡片透明时，交错滚动会形成「字压字」',
+  }
+  const opaque = layout.checkOpaqueSurfaces(stylesSource)
+  for (const [name, ok] of Object.entries(opaque)) {
+    assert.ok(ok, `${name} 的背景必须不透明 —— ${reasons[name]}`)
+  }
+})
+
+step('布局：探测规则本身有效（拿有 bug 的旧样式表必须能报出问题）', () => {
+  /*
+   * 反向验证。这里的「旧样式表」是刻意构造的坏样本，覆盖两类根因：
+   *   1. `card` / `footer` 用 `'transparent'` 兜底
+   *   2. sticky 条没盖满 `.options` 的 24px 内边距
+   * 只要这两处还能被报出来，就说明规则不是摆设。
+   */
+  const brokenSample = `
+export const S = {
+  wrap: { maxWidth: '100%' },
+  card: {
+    border: \`1px solid \${c('--color-border-tertiary', 'rgba(0,0,0,0.12)')}\`,
+    background: c('--color-background-primary', 'transparent'),
+  },
+  cardPinned: {
+    position: 'sticky',
+    top: 0,
+    background: c('--color-background-primary', '#fff'),
+    isolation: 'isolate',
+  },
+  footer: {
+    position: 'sticky',
+    bottom: 0,
+    background: c('--color-background-primary', 'transparent'),
+  },
+  field: { gridTemplateColumns: 'minmax(0, 168px) minmax(0, 1fr) auto' },
+  input: { minWidth: 0 },
+  select: { minWidth: 0 },
+  textarea: { minWidth: 0 },
+  metaGrid: { gridTemplateColumns: 'repeat(auto-fit, minmax(0, 220px))' },
+  chipLabel: { maxWidth: 240 },
+}
+`
+  const problems = layout.checkLayout(brokenSample)
+  assert.ok(problems.length > 0, '坏样本竟然全部通过 —— 说明探测规则已经失效，必须修规则本身')
+  const joined = problems.join('\n')
+  assert.ok(joined.includes('保存条背景不透明'), '没报出「保存条透明」—— 这是透明重叠的主要症状')
+  assert.ok(joined.includes('卡片背景不透明'), '没报出「卡片透明」')
+  assert.ok(joined.includes('横向盖满'), '没报出「sticky 条两侧漏缝」')
+  assert.ok(joined.includes('--color-'), '没报出「引用了宿主不存在的变量」')
+
+  // 但白色兜底的 sticky 条不算「透明」—— 它的真实问题是「和面板同色」，
+  // 由覆盖宽度那条规则负责。这里确认判定函数没把 '#fff' 误判成透明。
+  assert.equal(layout.isOpaqueBackground("c('--x', '#fff')"), true, "'#fff' 应判为不透明")
+  assert.equal(layout.isOpaqueBackground("c('--x', 'transparent')"), false, "'transparent' 应判为透明")
 })
 
 step('布局：常见屏幕与分辨率下，设置项一行排得下（不会换行重叠）', () => {

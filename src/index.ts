@@ -34,7 +34,7 @@ import { registerLocalModelCommands } from './commands.js'
 export const name = 'local-model'
 
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export const PLUGIN_VERSION = '0.5.1'
+export const PLUGIN_VERSION = '0.5.2'
 
 /**
  * 硬依赖：无。

@@ -7,11 +7,15 @@
  *   3. 按需加载：选定模型后，第一条对话自动拉起 llama-server 并载入模型；
  *   4. 空闲卸载：连续 5 分钟（可配）无对话交互即卸载模型、释放显存与内存。
  *
+ * 设置页顶部还有一块「参数预设」：把整套加载/推理参数存成带名字的条目，一键切换。
+ *
  * 遵循 dsh 插件契约：只用具名导出（name / inject / Config / apply），
  * 绝不使用 export default —— Loader 的 unwrapExports 会把默认导出折叠掉，
  * 连带丢掉 inject 等元数据，且不报错。
  */
 import type { Context } from '@deepseek-ai/cordis'
+
+import path from 'node:path'
 
 import { Config as LocalModelConfigSchema, type LocalModelConfig } from './config.js'
 import { resolveConfig, logLevelOf, LOCAL_MODEL_ID } from './configResolve.js'
@@ -19,6 +23,7 @@ import { createLog } from './log.js'
 import { LocalModelProxy } from './proxy.js'
 import { LocalModelRuntime } from './lifecycle.js'
 import { ConfigStore } from './configStore.js'
+import { PresetStore } from './presets.js'
 import { buildFormDescriptor } from './schemaForm.js'
 import { registerWebBridge } from './webBridge.js'
 import { bridgeLlmRoute, buildRouteSpec, renderRouteYaml } from './llmBridge.js'
@@ -29,7 +34,7 @@ import { registerLocalModelCommands } from './commands.js'
 export const name = 'local-model'
 
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export const PLUGIN_VERSION = '0.4.2'
+export const PLUGIN_VERSION = '0.5.0'
 
 /**
  * 硬依赖：无。
@@ -52,6 +57,9 @@ export function apply(ctx: Context, config?: Partial<LocalModelConfig>): void {
 
   // 用户层配置独立落盘：schema 默认值 → 组合层（部署配置）→ 这个文件。
   const store = new ConfigStore(boot.paths.configFile, composition)
+
+  // 参数预设与 config.json 同目录：一份配置 + 若干套可切换的参数。读写全在这里，运行时不再碰它。
+  const presets = new PresetStore(path.join(boot.paths.stateDir, 'presets.json'))
 
   const runtime = new LocalModelRuntime(boot, log, {
     persistSelectedModel: (id) => {
@@ -91,6 +99,8 @@ export function apply(ctx: Context, config?: Partial<LocalModelConfig>): void {
     void (async () => {
       // 先读用户层：模型目录、端口这些可能已被设置页改过，init 必须按最终值跑。
       await store.load()
+      // 预设读失败只降级成「没有预设」（内部已容错），不影响下面这条主线。
+      await presets.load()
       await runtime.applyConfig(store.resolve(), { reload: false })
 
       try {
@@ -104,6 +114,7 @@ export function apply(ctx: Context, config?: Partial<LocalModelConfig>): void {
       disposeBridge = registerWebBridge(ctx, {
         runtime,
         store,
+        presets,
         form: () => buildFormDescriptor(LocalModelConfigSchema, runtime.config, store.filePath),
         pluginVersion: PLUGIN_VERSION,
         log,

@@ -4,13 +4,21 @@
 # dsh-plugin-local-model
 
 给 **DeepSeek Harness（dsh）** 用的本地模型插件：在设置里管理本地 GGUF 模型，
-**第一条对话自动拉起 llama.cpp 载入模型，连续 5 分钟无交互自动卸载并释放显存**。
+**第一条对话自动拉起 llama.cpp 载入模型，连续 5 分钟无交互自动卸载并释放显存**；
+设置页顶部还有一块**参数预设**，把整套参数存成带名字的条目，一键切换。
 
 模型和 llama 工具由用户自己下载，放进插件规定的目录即可 —— 插件不联网拉模型、不碰工作区文件、
 除本机回环地址外不监听任何端口。
 
 ## 更新日志
 
+- **0.5.0** — 新增**参数预设**：把整套加载/推理参数（含选中的模型与视觉投影）存成带名字的条目，
+  可存多组、可重命名、可覆盖、可删除，点一下即切换。预设条固定在**设置页顶部**，
+  滚到参数区也能直接切。预设只收「参数」不收「环境」—— 端口、监听地址、模型/运行时目录、
+  密钥、日志级别这 9 项不进预设，切换预设不会动它们（否则切个参数预设会把端口也换掉）。
+  存储在 `<DSH_HOME>/local-model/state/presets.json`（与 `config.json` 同目录，独立成文件，
+  不污染既有配置）。**新增功能不动既有行为**：所有原设置项、按钮、请求改写、加载/卸载逻辑一字未改，
+  预设的应用路径就是「保存设置」那条路径（写入用户层 → 按新参数卸载 → 下次对话重载）。
 - **0.4.2** — 修掉「推理档位拨了会 500」。`0.4.1` 让 dsh 把档位写进 `chat_template_kwargs` 之后暴露了两个新问题：① 模型模板对**不认识的档位是直接 `raise_exception`**（实测这个模型只认 `xhigh`/`medium`/`low`），而插件把面板档位原样透传、dsh 还会把 `off` 发成布尔 `false` —— 一次对话直接 500；② 插件仍会在某些情形下**覆盖请求自己的档位选择**（开关关闭时把 High 也压成不思考）。现在：加载后**读模型模板解析出它支持的档位表**（日志与状态卡都会显示），面板档位按表重映射（`high → xhigh`）；映射不出来就不发这个字段；`false`/`null`/`true` 等形态一律归一化；开/关**以请求为准**，插件开关只在请求什么都没说时生效。
 - **0.4.1** — 修掉「dsh 的推理等级滑杆形同虚设」。两处成因，都修了：① 插件注册进 dsh 的路由 profile **没有声明这是推理模型**（缺 `reasoningEfforts`），pi-ai 因此什么思考参数都不发，滑杆只是个摆设；现在会声明 `compat.thinkingFormat = chat-template` 与七档映射，让 dsh 把档位写进 `chat_template_kwargs`（llama.cpp **唯一**认的通道）。② 插件的「启用思考」开关**无条件**把 `enable_thinking` 改写成 `true`，把 dsh 选的 Off 也顶掉了 —— 现在开关开启时只当**默认值**：请求里已经显式写了 `enable_thinking` 或带了档位就原样放行；关闭时仍是硬覆盖。另外代理会把顶层的 `reasoning_effort` **下沉**进 `chat_template_kwargs` —— 顶层字段会被 llama-server 静默丢掉（无报错、无日志），这是社区踩过的坑。
 - **0.4.0** — ① **新增 13 项设置**：KV 缓存策略 2 项（`kvUnified`、`kvStreamStageMib`，其中流式暂存是特定 llama.cpp 分支的私有参数）、采样参数 8 项（`temp` / `topK` / `topP` / `minP` / `presencePenalty` / `repeatPenalty` / `repeatLastN` / `seed`）、多模态与推理预算 3 项（`imageMinTokens` / `imageMaxTokens` / `reasoningBudget`）。这些参数现在会在每次加载时**显式下发并覆盖 llama.cpp 自身的默认值**（`temp` 0.8→0.75、`top-k` 40→20、`min-p` 0.05→0、`repeat-penalty` 1.1→1.0），设置页里逐项注明了差异。② **删除「接入 dsh」整组设置**（`routeName` / `modelAlias` / `routeModelId` / `contextWindow` / `registerRoute` / `exposeTool` / `allowModelControl`）：这 7 项改为 `configResolve.ts` 里的常量，取值沿用原默认值，**行为与默认安装完全一致但从此不可配置**。③ `maxTokens`（单次最大输出 tokens）保留，从「接入 dsh」挪进「推理参数」。④ 顺带修掉一处会静默毁掉小数设置的 bug：`clamp()` 内部有四舍五入，`temp 0.75` 会被它变成 `1`；小数项改用新的 `clampFloat()`。
@@ -32,6 +40,7 @@
 | ② 用户自行下载 llama 工具与模型，存入插件规定目录 | `src/paths.ts` 定义目录约定并在首次运行时写入放置说明；`scripts/fetch-llama.mjs` 可选一键下载 |
 | ③ 选定模型后首条对话自动拉起并载入 | `src/proxy.ts`（常驻轻量入口）+ `src/lifecycle.ts` 的 `ensureReady()` 单飞加载 |
 | ④ 连续 5 分钟无交互自动卸载释放资源 | `idleUnloadMinutes`（默认 5）；判定规则抽成纯函数 `shouldUnload()`，`src/lifecycle.ts` |
+| ⑤ **参数预设**：存多组带名字的参数、固定在页面顶部、一键应用 | `src/presets.ts`（独立落盘 `state/presets.json` + 作用域定义）+ `webBridge.ts` 的 5 条 `/presets/*` 路由 + 浏览器侧 `client/src/presets.jsx`（顶部预设条）。见 [第 4 节](#参数预设050-新增) |
 
 「不占资源」是硬指标：**没有对话时磁盘上只有一个常驻 HTTP 代理进程（不加载模型、不占显存）**，
 llama-server 只在第一个请求进来时才被 spawn。这一条有端到端测试兜底（见第 9 节）。
@@ -117,7 +126,9 @@ $DSH_HOME/local-model/            # Windows 默认 C:\Users\<你>\.dsh\local-mod
 │   └── PUT_GGUF_MODELS_HERE.txt
 ├── runtime/                      # ← 把 llama.cpp 解压到这里（可放在一层子目录里）
 │   └── PUT_LLAMA_RUNTIME_HERE.txt
-└── state/                        # 插件自管：pid、日志，不用管
+└── state/                        # 插件自管：pid、日志、设置与预设，不用管
+    ├── config.json               # 设置页保存的用户层配置
+    └── presets.json              # 参数预设（0.5.0 起；一组都没存过时这个文件不存在）
 ```
 
 **llama 工具**：去 <https://github.com/ggml-org/llama.cpp/releases> 下载对应平台的包，解压到 `runtime/`
@@ -146,6 +157,8 @@ node scripts/fetch-llama.mjs --dry-run       # 只预览要下载哪个包
 重启 dsh 后，打开 **设置**，侧栏会出现一级条目 **「本地模型」**（排在「通用设置 / 模型」之后）。
 面板里依次是：
 
+- **参数预设**（`0.5.0` 起，置顶那块）：点名字即应用，`✎` 改名，`×` 删除，输入框 + 「保存为预设」新建，
+  应用过之后还能「用当前参数更新「X」」。见 [下面单独一节](#参数预设050-新增)。
 - **运行状态**：状态徽标（待机 / 加载中 / 已就绪 / 已卸载 / 失败）、当前模型、进程 pid、入口地址、
   预计自动卸载时间、最近一次错误；配「重新扫描 / 立即加载 / 卸载 / 刷新状态」按钮。
 - **模型下拉框**：列出模型目录里扫到的全部 GGUF，带量化、参数量、体积、是否分片完整、是否含视觉投影。
@@ -161,6 +174,40 @@ node scripts/fetch-llama.mjs --dry-run       # 只预览要下载哪个包
 两个例外是**需要下拉框**的字段（`selectedModel` 选模型、`mmprojFile` 选视觉投影文件）——
 选项来自扫描结果、schema 表达不了，所以由客户端特判渲染，其余字段一律自动出现。
 
+### 参数预设（0.5.0 新增）
+
+设置页**最上面**那一块，用 `position: sticky` 钉在顶部：下面几十项参数是用来调的，
+切换整套参数时不该还让你滚回页面顶端去找按钮。
+
+| 操作 | 怎么做 |
+| --- | --- |
+| 新建 | 输入名字（回车或点「保存为预设」）。名字最长 40 字，重名会被拒绝（不区分大小写），最多 100 组 |
+| 应用 | **点预设名**。按新参数卸载模型，下次对话重新加载 —— 与「保存设置」同一条路径、同一个后果 |
+| 重命名 / 删除 | 预设上的 `✎` / `×`。删一组参数不影响当前生效的设置 |
+| 更新某一组 | 应用过之后，会出现「用当前参数更新「X」」——把界面上这套参数写回它，名字不变 |
+| 看差异 | 每个预设上标着「N 项不同」，与当前生效配置完全一致的那个标「当前生效」并高亮 |
+
+**哪些设置会进预设，哪些不会：**
+
+| | 字段 | 为什么 |
+| --- | --- | --- |
+| ✅ 进预设（41 项） | 当前模型、视觉投影文件、MTP、上下文长度、GPU 层数、线程/批大小、Flash Attention、KV 精度与策略、8 项采样参数、图像 token 预算、推理预算、三个思考开关、Jinja/模板、mmap/mlock、附加参数、环境变量、空闲卸载与超时重试、单次最大输出 | 这些就是「一套参数」的内容。像「看图」这种预设，本来就该连同模型一起切过去 |
+| ❌ 不进预设（9 项） | `enabled`、`modelsDir`、`runtimeDir`、`llamaServerPath`、`host`、`port`、`llamaPort`、`apiKey`、`logLevel` | 这些属于**这台机器**而不是**这套参数**：端口和别的服务是否占用有关、路径是部署环境、密钥不该在预设文件里再存一份明文、日志级别是排查时的临时开关。切个参数预设却把端口换掉，只会是事故 |
+
+作用域由 `src/presets.ts` 的 `PRESET_EXCLUDED_KEYS` 唯一定义，界面上的说明文案也来自同一处
+（宿主把 `keys` / `excluded` 一起送进 `/state`），不存在两边各写一份而漂移的可能。
+
+**两条交互规则值得知道：**
+
+1. **保存的是界面上当前这套参数**，含还没保存的修改 —— 界面会写明「含 N 项还没保存的修改」。
+   数字框被清空时按「未设置」处理（回落成已保存的值），不会写成 0；
+2. **应用预设会丢弃未保存的草稿**，所以有草稿时会先弹一次确认；应用成功后草稿清空 ——
+   否则界面上会留下一堆「未保存」的假象。
+
+预设落在 `<DSH_HOME>/local-model/state/presets.json`，与 `config.json` 同目录但**独立成文件**：
+一份配置 + 若干套可切换的参数，互不干扰。文件损坏、内容离谱（缺名字、缺 id、重复 id、一项参数都没有）
+都只会**降级成「没有预设」并在面板上说明**，绝不影响模型加载这条主线 —— 它只是便利功能。
+
 ### 设置的三个层级
 
 沿用 dsh 自己的三层语义，用户层落在插件目录里：
@@ -173,6 +220,11 @@ schema 默认值  →  组合层（cordis.patch.yml / 部署配置）  →  <DSH
 浏览器发来的 JSON 只按 `src/configStore.ts` 里的类型表做强制转换，表里没有的键一律丢弃 ——
 界面写不进一条会污染 llama-server 命令行的脏数据。
 
+**「应用预设」写的是同一个文件、过的是同一道闸门**：预设值先按作用域过滤（见上一节），
+再走 `ConfigStore.update()` —— 于是「点预设」与「点保存」在落盘、卸载、提示三件事上完全一致，
+不存在两套逻辑各跑各的可能。预设文件本身也不豁免：`presets.json` 里的值读回来时同样过一遍闸门，
+手改配置文件塞进去的脏数据不会跑到命令行上。
+
 > 为什么不用 dsh 的 settings 命名空间：当前 dsh 版本的 settings apiproxy 只服务硬编码的命名空间白名单，
 > 第三方插件的命名空间一律答复 `settings-not-exposed`，浏览器侧既读不到也写不进。
 > 自建一条同源 HTTP 桥（`/api/local-model`，注册在宿主 webServer 上）是这一版宿主上唯一可靠的通道。
@@ -181,7 +233,7 @@ schema 默认值  →  组合层（cordis.patch.yml / 部署配置）  →  <DSH
 
 本机工具、没有账号体系，所以靠三条硬约束而不是鉴权：
 
-1. **只接受回环来源的请求** —— 配置变更与进程启停不该被局域网里的谁触发；
+1. **只接受回环来源的请求** —— 配置变更与进程启停不该被局域网里的谁触发（`/presets/*` 也一样）；
 2. **写操作要求 `content-type: application/json`** —— 普通表单跨站提交做不到这一点，
    于是即便有恶意页面在浏览器里跑，也发不出能改配置的请求；
 3. 请求体有大小上限。
@@ -542,6 +594,12 @@ disabled ──启用──▶ idle ──首条对话──▶ starting ──�
 | 回复一卡一卡然后断开 | 设置页或路由里的 `streamIdleTimeoutMs` 太短（本地推理慢），参考第 5 节调到 600000 |
 | 显存没释放 | 看 `local_model` 工具或 `/local-model status` 的状态；确认 `idleUnloadMinutes` 不是 0 |
 | 改完设置不生效 | 端口/目录类改动需重启 dsh；模型/参数类改动被空闲卸载后或 `/local-model reload` 后会按新值生效 |
+| 找不到「参数预设」那一块，或点了预设没反应 | 它在 **设置 → 本地模型** 页最上面（置顶那条）。一片预设都没有时只有输入框 —— 输入名字点「保存为预设」。升级后没出现先看状态卡里的版本号是否为 `v0.5.0`，再跑 `npm run verify` |
+| 点预设提示「找不到这个预设，可能已被删除」 | 另一个标签页/窗口把这组预设删掉了。点「刷新状态」重新拉一次即可 |
+| 预设里怎么没有端口 / 模型目录 / 密钥 | **设计如此，不是漏了**：这 9 项属于「这台机器」而不属于「这套参数」，切换预设时保持原样（否则切一次参数就把端口换了）。作用域见第 4 节「参数预设」 |
+| 应用预设之后模型被卸载并重新加载了一次 | 预期行为：它与「保存设置」走同一条路径 —— 参数变了就卸载，下次对话按新参数加载 |
+| 预设建不出来（说名称重复 / 为空） | 名称不能为空、不能重复（不区分大小写），最长 40 字，最多 100 组。换个名字或先删掉旧的 |
+| 面板提示「预设文件解析失败，已按「没有预设」处理」 | `state/presets.json` 被外部改坏了。插件不会因此起不来、模型加载也不受影响，只是那批预设读不回来；删掉该文件即可从头再来 |
 
 ## 9. 开发与测试
 
@@ -550,10 +608,10 @@ npm run build       # tsc → lib/，再打包客户端 bundle → client/client
 npm run build:client # 只重打浏览器半侧（改 client/src 后用它）
 npm run verify      # 清单自检：bundle 合法性 + 客户端半侧合规 + 在哪些 profile 装了却没生效
 npm run verify:llama # 参数验收：拿本机的 llama-server 真起一次，确认它接受插件下发的参数
-npm test            # 下面五套全跑（共 147 项：单测 102 + e2e 13 + 加载 24 + 客户端 8 + 清单 12 项检查）
-npm run test:client # 浏览器 bundle：用假 loader 真加载一遍，校验格式与插槽注册规格
-npm run test:load   # 类宿主跑 apply()：目录骨架、代理端口、设置面板数据面与安全约束
-npm run test:unit   # 参数拼装 / 能力探测 / 分片归并 / 路径与配置解析
+npm test            # 下面五套全跑（共 175 项：单测 118 + e2e 13 + 加载 32 + 客户端 12 + 清单 12 项检查）
+npm run test:client # 浏览器 bundle：用假 loader 真加载一遍，校验格式、插槽注册与预设条契约
+npm run test:load   # 类宿主跑 apply()：目录骨架、代理端口、设置面板数据面、参数预设与安全约束
+npm run test:unit   # 参数拼装 / 能力探测 / 分片归并 / 路径与配置解析 / 参数预设读写
 npm run test:e2e    # 真进程跑完整加载与空闲卸载生命周期
 ```
 
@@ -575,17 +633,22 @@ npm run test:e2e    # 真进程跑完整加载与空闲卸载生命周期
 ✓ 外部依赖都走注入的 require（react 没被打进包） ✓ 导出 apply / inject，且没有 default 导出
 ✓ apply 注册了 id 为 local-model 的 settings.section ✓ 侧栏标题取词为「本地模型」
 ✓ 注册的一切都可逆（mounted / disposer）
+✓ 预设：客户端调的 5 条路由宿主侧全都有（防两边路径悄悄错位）
+✓ 预设：预设条排在状态卡之前（「固定在顶部」这条需求由测试钉住）
+✓ 预设快照：草稿优先 / 空数字回落 / 字符串空值保留
 ```
 
 **加载验证**（`load-check.mjs`）在临时目录里搭一个假 profile，让 `@deepseek-ai/schemastery`
 指回**本机真实的 schemastery**（不是自造的桩），把编译产物拷进去加载，钉死 dsh 的硬约定并顺带
-把设置面板的数据面也验一遍：
+把设置面板的数据面与参数预设也验一遍：
 
 ```
 ✓ 导出符号齐全 / 没有默认导出 / schema 能产出默认值     ✓ 宿主服务全缺失时 apply() 仍能跑起来
 ✓ 目录骨架与放置说明被创建                              ✓ 代理端口可监听、状态端点可访问
 ✓ 表单分组 ≥5 组、字段 ≥30 且文案来自 schema             ✓ 保存落盘并即时生效；恢复默认清空用户层
-✓ 拒绝非本机来源（403）                                 ✓ 写操作要求 JSON content-type（415）
+✓ 预设：存 / 读 / 应用 / 改名 / 覆盖 / 删除全链路        ✓ 预设：环境字段被挡在预设之外（端口不受影响）
+✓ 预设：重名与空值有可读报错，失败不留半条记录            ✓ 预设：重启后仍能读回同一个文件
+✓ 拒绝非本机来源（403，含预设接口）                      ✓ 写操作要求 JSON content-type（415）
 ✓ 只接受 GET/POST（405）；非法 JSON 有明确报错           ✓ 卸载时端口被释放
 ```
 
@@ -609,9 +672,10 @@ src/                 宿主侧（Node）
 ├── config.ts         设置项的唯一真源（schemastery schema，50 个字段）
 ├── configResolve.ts  配置解析：路径占位符、区间收敛（无宿主依赖，可单独测）
 ├── configStore.ts    用户层配置读写 + 写入白名单/类型闸门
+├── presets.ts        参数预设：作用域定义 + 落盘（独立于 schemastery，可单独测）
 ├── paths.ts          $DSH_HOME 与目录约定、首次初始化
 ├── schemaForm.ts     把 schema 序列化成设置面板的表单描述（含分组）
-├── webBridge.ts      同源 HTTP 数据面（状态 / 配置 / 操作），回环 + JSON 约束
+├── webBridge.ts      同源 HTTP 数据面（状态 / 配置 / 操作 / 预设），回环 + JSON 约束
 ├── registry.ts       模型扫描：GGUF 分片归并、量化/参数量识别、mmproj 关联与选择
 ├── requestRewrite.ts 请求体改写：思考开关（chat_template_kwargs + 历史 think 剥离）
 ├── lifecycle.ts      状态机：单飞加载、空闲卸载、崩溃自愈、热改配置
@@ -621,16 +685,18 @@ src/                 宿主侧（Node）
 └── commands.ts       /local-model 命令（status / list / start / stop / reload / route）
 client/src/          浏览器半侧
 ├── index.jsx         注册 settings.section 一级页面 + 词条
-├── section.jsx       面板：状态、模型/视觉投影下拉（MTP 开启时置灰）、按 schema 渲染的分组表单
+├── section.jsx       面板：预设条、状态、模型/视觉投影下拉（MTP 开启时置灰）、按 schema 渲染的分组表单
+├── presets.jsx       置顶的「参数预设」条：保存 / 应用 / 改名 / 覆盖 / 删除
+├── presetSnapshot.js 预设快照的纯逻辑（可被 node 直接单测）
 ├── api.js            同源 fetch
 └── styles.js         内联样式（不引 CSS modules，少一个加载失败面）
 scripts/
 ├── verify-bundle.mjs 清单自检（bundle + client + profile 挂载状态）
 ├── verify-llama.mjs  参数验收（拿真 llama-server 跑一次参数解析）
 ├── build-client.mjs  esbuild 打包 + 套 lazy-CJS factory 外壳
-├── client-check.mjs  假 loader 加载校验
+├── client-check.mjs  假 loader 加载校验 + 预设契约与快照逻辑单测
 ├── load-check.mjs    类宿主环境加载验证
-├── selftest.mjs      纯逻辑单元自检
+├── selftest.mjs      纯逻辑单元自检（含参数预设的读写与容错）
 ├── e2e.mjs           真进程端到端
 └── fetch-llama.mjs   下载 llama.cpp 运行时
 ```

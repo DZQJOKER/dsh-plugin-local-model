@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { fetchState, resetConfig, runAction, saveConfig } from './api.js'
+import { buildPresetSnapshot, fieldKindMap } from './presetSnapshot.js'
+import { PresetBar } from './presets.jsx'
 import { S, STATE_COLORS } from './styles.js'
 
 /** 轮询间隔：只在「加载中 / 卸载中」这两种有过程感的状态下开启。 */
@@ -88,12 +90,32 @@ export function LocalModelSection() {
   }
 
   const discard = () => {
-    setDraft({})
-    setUnset([])
-    setInvalid([])
+    resetDraft()
     setError(null)
     setNotice(null)
   }
+
+  /** 只清草稿，不动提示 —— 「应用预设」之后要用它把未保存修改丢掉。 */
+  const resetDraft = () => {
+    setDraft({})
+    setUnset([])
+    setInvalid([])
+  }
+
+  /** 字段 key → 控件类型。预设快照要按类型决定怎么处理空值。 */
+  const fieldKinds = useMemo(() => fieldKindMap(state?.form?.groups ?? []), [state])
+
+  /**
+   * 参数预设的快照：**界面上当前这套参数**（草稿优先），只取宿主认定的预设字段。
+   * 空数字按「未设置」回落、字符串空值保持原样 —— 规则与理由见 presetSnapshot.js。
+   */
+  const presetSnapshot = () =>
+    buildPresetSnapshot({
+      keys: state?.presets?.keys ?? [],
+      kinds: fieldKinds,
+      draft,
+      config,
+    })
 
   const act = async (name, fn, successMessage) => {
     setBusy(name)
@@ -163,6 +185,21 @@ export function LocalModelSection() {
       {state.runtime.visionDisabledByMtp ? (
         <div style={{ ...S.banner, ...S.warn }}>{state.runtime.visionDisabledByMtp}</div>
       ) : null}
+
+      {/*
+        参数预设条固定在页面顶部（sticky）：它是这一页唯一「随时要用」的操作区 ——
+        下面那几十项参数是用来调的，切换整套参数时不该还让用户滚回顶部去找按钮。
+      */}
+      <PresetBar
+        presets={state.presets}
+        dirtyCount={dirtyCount}
+        invalid={invalid}
+        busy={busy}
+        busyAny={busyAny}
+        snapshot={presetSnapshot}
+        resetDraft={resetDraft}
+        act={act}
+      />
 
       <div style={S.card}>
         <div style={S.statusRow}>

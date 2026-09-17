@@ -569,8 +569,206 @@ await step('设置页数据面：恢复默认会清空用户层', async () => {
   assert.deepEqual(state.overridden, [])
 })
 
-await step('设置页数据面：操作端点能扫模型 / 报错可读', async () => {
-  const scan = await callBridge({ method: 'POST', path: '/api/local-model/action', contentType: 'application/json', body: { action: 'scan' } })
+// ── 参数预设（本轮新增：设置页顶部那一块）────────────────────────────────────
+const presetsFile = path.join(fakeHome, 'local-model', 'state', 'presets.json')
+let presetA = null
+let presetB = null
+/** 应用预设之前的端口 —— 用来证明「预设动不到环境字段」。 */
+let portBeforePresets = null
+
+await step('参数预设：state 里带出预设清单与作用域说明', async () => {
+  const res = await callBridge({ path: '/api/local-model/state' })
+  const state = JSON.parse(res.body)
+  portBeforePresets = state.config.port
+  assert.ok(state.presets, 'state 必须带上 presets，否则界面无从渲染')
+  assert.deepEqual(state.presets.items, [], '还没存过预设时应当是空清单')
+  assert.equal(state.presets.activeId, null)
+  assert.equal(state.presets.file, presetsFile, '预设文件落在 state 目录下')
+  assert.ok(state.presets.keys.includes('temp'), '采样参数必须进预设作用域')
+  assert.equal(state.presets.keys.includes('port'), false, '端口不属于可切换的参数')
+  assert.ok(state.presets.excluded.includes('apiKey'), '界面要用它说明「哪些设置不跟着预设走」')
+  assert.equal(
+    fs.existsSync(presetsFile),
+    false,
+    '一条预设都没有时不该凭空建文件（保持「原有功能不变」）',
+  )
+})
+
+await step('参数预设：能存能读，环境字段被挡在预设之外', async () => {
+  const res = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/save',
+    contentType: 'application/json',
+    body: {
+      name: '  看图模式  ',
+      values: { ctxSize: '16384', mmprojFile: 'mmproj-VLM-f16.gguf', temp: '0.6', port: 19999, apiKey: 'x' },
+    },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  const state = JSON.parse(res.body)
+  assert.match(state.message, /已保存预设「看图模式」/, '名称应当被归一化后再回显')
+  assert.equal(state.presets.items.length, 1)
+  presetA = state.presets.items[0]
+  assert.equal(presetA.fieldCount, 3, '端口与密钥不该被算进这套参数')
+  assert.equal(presetA.changed, 3, '与当前默认配置有 3 项不同')
+  assert.equal(state.presets.activeId, null, '还没应用过，不该被标成「当前生效」')
+
+  const onDisk = JSON.parse(fs.readFileSync(presetsFile, 'utf8'))
+  assert.equal(onDisk.items.length, 1, '预设必须真的落盘')
+  assert.deepEqual(onDisk.items[0].values, { ctxSize: 16384, mmprojFile: 'mmproj-VLM-f16.gguf', temp: 0.6 })
+  assert.equal(onDisk.items[0].port, undefined, '环境字段绝不能被写进预设文件')
+})
+
+await step('参数预设：应用 = 写入用户层配置 + 即时生效 + 标记「当前生效」', async () => {
+  const res = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/apply',
+    contentType: 'application/json',
+    body: { id: presetA.id },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  const state = JSON.parse(res.body)
+  assert.equal(state.config.ctxSize, 16384, '应用预设必须立刻反映到运行时配置')
+  assert.equal(state.config.temp, 0.6)
+  assert.equal(state.config.mmprojFile, 'mmproj-VLM-f16.gguf')
+  assert.equal(state.presets.activeId, presetA.id, '与当前配置完全一致的那个预设应当被标出来')
+  assert.equal(state.presets.items[0].changed, 0)
+  assert.equal(state.config.port, portBeforePresets, '预设里没有端口，切换不该动它')
+
+  const onDisk = JSON.parse(fs.readFileSync(path.join(fakeHome, 'local-model', 'state', 'config.json'), 'utf8'))
+  assert.equal(onDisk.values.ctxSize, 16384, '应用预设走的是与「保存设置」同一条落盘路径')
+  assert.equal(onDisk.values.port, undefined, '预设动不到端口，用户层配置里也不该多出这一项')
+})
+
+await step('参数预设：切换另一组时，上一组没写的字段保持原样', async () => {
+  const created = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/save',
+    contentType: 'application/json',
+    body: { name: '纯文本', values: { ctxSize: 4096, mmprojFile: '' } },
+  })
+  assert.equal(created.statusCode, 200, created.body)
+  const created2 = JSON.parse(created.body)
+  presetB = created2.presets.items.find((p) => p.name === '纯文本')
+  assert.ok(presetB, '第二组预设应当被保存')
+  assert.notEqual(presetB.changed, 0, '它与当前配置不一样')
+
+  const res = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/apply',
+    contentType: 'application/json',
+    body: { id: presetB.id },
+  })
+  const state = JSON.parse(res.body)
+  assert.equal(state.config.ctxSize, 4096)
+  assert.equal(state.config.mmprojFile, '', '空串是合法取值（清掉视觉投影），不能被当成「未设置」')
+  assert.equal(state.config.temp, 0.6, '这一组没写 temp，就该保持上一次的值不动')
+  assert.equal(state.presets.activeId, presetB.id)
+})
+
+await step('参数预设：重命名 / 用当前参数覆盖 / 删除', async () => {
+  const renamed = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/rename',
+    contentType: 'application/json',
+    body: { id: presetB.id, name: '纯文本（省显存）' },
+  })
+  assert.equal(renamed.statusCode, 200, renamed.body)
+  const afterRename = JSON.parse(renamed.body)
+  const renamedPreset = afterRename.presets.items.find((p) => p.id === presetB.id)
+  assert.equal(renamedPreset.name, '纯文本（省显存）', '改名不该换 id，否则界面上的选中态会丢')
+  assert.equal(renamedPreset.changed, 0, '只改了名字，参数仍与当前一致')
+
+  const overwritten = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/overwrite',
+    contentType: 'application/json',
+    body: { id: presetB.id, values: { ctxSize: 2048 } },
+  })
+  const afterOverwrite = JSON.parse(overwritten.body)
+  const updated = afterOverwrite.presets.items.find((p) => p.id === presetB.id)
+  assert.equal(updated.name, '纯文本（省显存）', '覆盖不该动名字')
+  assert.equal(updated.fieldCount, 1, '覆盖是整套替换')
+  assert.equal(updated.changed, 1)
+  const onDisk = JSON.parse(fs.readFileSync(presetsFile, 'utf8'))
+  assert.deepEqual(onDisk.items.find((p) => p.id === presetB.id).values, { ctxSize: 2048 })
+
+  const removed = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/delete',
+    contentType: 'application/json',
+    body: { id: presetB.id },
+  })
+  const afterDelete = JSON.parse(removed.body)
+  assert.equal(afterDelete.presets.items.length, 1, '删掉之后只剩第一组')
+  assert.match(afterDelete.message, /已删除预设/)
+
+  const gone = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/apply',
+    contentType: 'application/json',
+    body: { id: presetB.id },
+  })
+  assert.equal(gone.statusCode, 500, '应用一个已删除的预设必须报错，而不是静默成功')
+  assert.match(JSON.parse(gone.body).error, /找不到这个预设/)
+})
+
+await step('参数预设：名称冲突与空值都有可读报错', async () => {
+  const dup = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/save',
+    contentType: 'application/json',
+    body: { name: '看图模式', values: { temp: 1 } },
+  })
+  assert.equal(dup.statusCode, 500)
+  assert.match(JSON.parse(dup.body).error, /已经有一个叫/)
+
+  const blank = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/save',
+    contentType: 'application/json',
+    body: { name: '   ', values: { temp: 1 } },
+  })
+  assert.equal(blank.statusCode, 500)
+  assert.match(JSON.parse(blank.body).error, /名称不能为空/)
+
+  const empty = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/save',
+    contentType: 'application/json',
+    body: { name: '空的', values: { port: 1 } },
+  })
+  assert.equal(empty.statusCode, 500)
+  assert.match(JSON.parse(empty.body).error, /没有任何可保存的项/)
+
+  const state = JSON.parse((await callBridge({ path: '/api/local-model/state' })).body)
+  assert.equal(state.presets.items.length, 1, '三次失败都不该留下半条记录')
+})
+
+await step('参数预设：重启插件后仍能读回（落盘位置与插件约定一致）', async () => {
+  const presetsModule = await import(pathToFileURL(path.join(pluginDir, 'lib', 'presets.js')).href)
+  const reopened = new presetsModule.PresetStore(presetsFile)
+  await reopened.load()
+  assert.equal(reopened.loadWarning, null)
+  const list = reopened.list()
+  assert.equal(list.length, 1)
+  assert.equal(list[0].id, presetA.id)
+  assert.deepEqual(list[0].values, { ctxSize: 16384, mmprojFile: 'mmproj-VLM-f16.gguf', temp: 0.6 })
+})
+
+await step('参数预设：新路由同样只服务本机来源', async () => {
+  const res = await callBridge({
+    method: 'POST',
+    path: '/api/local-model/presets/save',
+    contentType: 'application/json',
+    remoteAddress: '192.168.1.20',
+    body: { name: '来自局域网', values: { temp: 1 } },
+  })
+  assert.equal(res.statusCode, 403, '预设接口不能绕过「只接受回环来源」这条约束')
+  assert.match(JSON.parse(res.body).error, /只接受来自本机/)
+})
+
+await step('设置页数据面：操作端点能扫模型 / 报错可读', async () => {  const scan = await callBridge({ method: 'POST', path: '/api/local-model/action', contentType: 'application/json', body: { action: 'scan' } })
   assert.equal(scan.statusCode, 200)
   assert.match(JSON.parse(scan.body).message, /重新扫描/)
 

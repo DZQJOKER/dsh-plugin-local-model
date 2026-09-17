@@ -6,6 +6,13 @@ import type { LocalModelRuntime } from './lifecycle.js'
 import type { ConfigStore } from './configStore.js'
 import type { FormDescriptor } from './schemaForm.js'
 import { formatBytes } from './registry.js'
+import {
+  PRESET_EXCLUDED_KEYS,
+  presetKeys,
+  snapshotPresetValues,
+  type Preset,
+  type PresetStore,
+} from './presets.js'
 
 /** 同源路由前缀。浏览器侧直接 fetch 相对路径，不跨端口、不需要 CORS。 */
 export const BRIDGE_PREFIX = '/api/local-model'
@@ -23,6 +30,8 @@ export interface WebServerLike {
 export interface WebBridgeOptions {
   runtime: LocalModelRuntime
   store: ConfigStore
+  /** 参数预设的落盘仓库（与 config.json 同目录）。 */
+  presets: PresetStore
   /** 每次配置变化后重建（分组顺序跟着 schema 走）。 */
   form: () => FormDescriptor
   pluginVersion: string
@@ -74,7 +83,7 @@ export function registerWebBridge(ctx: Context, options: WebBridgeOptions): () =
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, options: WebBridgeOptions): Promise<void> {
-  const { runtime, store, log } = options
+  const { runtime, store, presets, log } = options
 
   if (!isLoopback(req)) {
     sendJson(res, 403, { ok: false, error: '本地模型插件只接受来自本机的请求' })
@@ -124,9 +133,73 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: WebBri
       sendJson(res, 200, { ...buildState(options), message })
       return
     }
+    /*
+     * ── 参数预设 ────────────────────────────────────────────────────────────
+     * 五个动作都走同一条配置落盘路径（store.update + applyConfig），
+     * 与「保存设置」完全一致 —— 于是行为、提示、卸载时机都不会两套逻辑漂移。
+     * 「应用预设」本身不额外做别的：预设里没有的字段（端口/路径/密钥等）保持原样。
+     */
+    case '/presets/save': {
+      const request = body as { name?: unknown; values?: unknown }
+      // 界面会把「当前看到的参数（含未保存的修改）」一起送过来；没送就从生效配置里摘快照。
+      const source = request.values === undefined ? snapshotPresetValues(runtime.config) : request.values
+      const preset = await presets.create(request.name, source)
+      log.info(`已保存参数预设「${preset.name}」（${presetFieldCount(preset)} 项）`)
+      sendJson(res, 200, { ...buildState(options), message: `已保存预设「${preset.name}」（${presetFieldCount(preset)} 项参数）` })
+      return
+    }
+    case '/presets/apply': {
+      const preset = requirePreset(presets, (body as { id?: unknown })?.id)
+      const next = await store.update(preset.values)
+      await runtime.applyConfig(next, { reload: true })
+      log.info(`已应用参数预设「${preset.name}」，模型已按新参数卸载`)
+      sendJson(res, 200, {
+        ...buildState(options),
+        appliedId: preset.id,
+        message: `已应用预设「${preset.name}」；模型已卸载，下次对话按新参数加载`,
+      })
+      return
+    }
+    case '/presets/overwrite': {
+      const request = body as { id?: unknown; values?: unknown }
+      const target = requirePreset(presets, request.id)
+      const source = request.values === undefined ? snapshotPresetValues(runtime.config) : request.values
+      const preset = await presets.overwrite(target.id, source)
+      log.info(`参数预设「${preset.name}」已用当前参数更新（${presetFieldCount(preset)} 项）`)
+      sendJson(res, 200, {
+        ...buildState(options),
+        message: `已用当前参数更新预设「${preset.name}」（${presetFieldCount(preset)} 项）`,
+      })
+      return
+    }
+    case '/presets/rename': {
+      const request = body as { id?: unknown; name?: unknown }
+      const target = requirePreset(presets, request.id)
+      const preset = await presets.rename(target.id, request.name)
+      log.info(`参数预设已重命名为「${preset.name}」`)
+      sendJson(res, 200, { ...buildState(options), message: `预设已重命名为「${preset.name}」` })
+      return
+    }
+    case '/presets/delete': {
+      const target = requirePreset(presets, (body as { id?: unknown })?.id)
+      const preset = await presets.remove(target.id)
+      log.info(`已删除参数预设「${preset.name}」`)
+      sendJson(res, 200, { ...buildState(options), message: `已删除预设「${preset.name}」` })
+      return
+    }
     default:
       sendJson(res, 404, { ok: false, error: `未知路径：${route}` })
   }
+}
+
+function presetFieldCount(preset: Preset): number {
+  return Object.keys(preset.values).length
+}
+
+function requirePreset(presets: PresetStore, id: unknown): Preset {
+  const preset = presets.find(id)
+  if (!preset) throw new Error('找不到这个预设，可能已被删除，请刷新后再试')
+  return preset
 }
 
 async function runAction(runtime: LocalModelRuntime, action: string): Promise<string> {
@@ -150,9 +223,10 @@ async function runAction(runtime: LocalModelRuntime, action: string): Promise<st
 }
 
 export function buildState(options: WebBridgeOptions): Record<string, unknown> {
-  const { runtime, store } = options
+  const { runtime, store, presets } = options
   const status = runtime.status()
   const models = runtime.listModels()
+  const current = runtime.config as unknown as Record<string, unknown>
 
   return {
     ok: true,
@@ -161,6 +235,28 @@ export function buildState(options: WebBridgeOptions): Record<string, unknown> {
     config: runtime.config,
     configFile: store.filePath,
     overridden: store.overriddenKeys(),
+    /*
+     * 参数预设。只送元信息（名字 / 项数 / 与当前配置的差异），不送 values ——
+     * 界面只需要渲染与切换，把整份参数来回搬没有意义。
+     */
+    presets: {
+      items: presets.list().map((preset) => ({
+        id: preset.id,
+        name: preset.name,
+        createdAt: preset.createdAt,
+        updatedAt: preset.updatedAt,
+        fieldCount: Object.keys(preset.values).length,
+        /** 与当前生效配置有几项不同 —— 界面直接显示「N 项不同」，不必自己算。 */
+        changed: presets.diffCount(preset.values, current),
+      })),
+      /** 与当前生效配置完全一致的那一个（没有则为 null），界面用它高亮。 */
+      activeId: presets.activeId(current),
+      /** 参与预设的字段，以及被排除的环境字段（界面的说明文案用）。 */
+      keys: presetKeys(),
+      excluded: [...PRESET_EXCLUDED_KEYS],
+      file: presets.filePath,
+      warning: presets.loadWarning,
+    },
     models: models.map((m) => ({
       id: m.id,
       displayName: m.displayName,

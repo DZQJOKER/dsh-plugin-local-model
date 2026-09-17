@@ -20,6 +20,56 @@ export const S = {
     marginBottom: 14,
     background: c('--color-background-primary', 'transparent'),
   },
+  /**
+   * 置顶卡：参数预设那一块。
+   *
+   * 用 sticky 把自己钉在滚动容器顶部（与底部保存条同一套做法），滚到参数区时预设条依然在，
+   * 「随时切换」才成立。背景取主题的 primary，取不到时回落到 transparent —— 与底部保存条一致。
+   */
+  cardPinned: {
+    position: 'sticky',
+    top: 0,
+    zIndex: 2,
+  },
+
+  chipRow: { display: 'flex', flexWrap: 'wrap', gap: 8, margin: '0 0 12px' },
+  chip: {
+    display: 'inline-flex',
+    alignItems: 'stretch',
+    borderRadius: 9,
+    border: `1px solid ${c('--color-border-secondary', 'rgba(0,0,0,0.22)')}`,
+    overflow: 'hidden',
+  },
+  /** 当前生效的那一个：加粗边框 + 主题主色描边，一眼看出「现在跑的是它」。 */
+  chipActive: {
+    borderColor: c('--color-text-primary', '#111'),
+    boxShadow: `inset 0 0 0 1px ${c('--color-text-primary', '#111')}`,
+  },
+  chipLabel: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    fontSize: 12.5,
+    lineHeight: '26px',
+    padding: '0 10px',
+    border: 'none',
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+  },
+  chipMeta: { fontSize: 10.5, opacity: 0.6 },
+  chipIcon: {
+    fontSize: 11.5,
+    lineHeight: '26px',
+    padding: '0 7px',
+    border: 'none',
+    borderLeft: `1px solid ${c('--color-border-tertiary', 'rgba(0,0,0,0.1)')}`,
+    background: 'transparent',
+    color: 'inherit',
+    opacity: 0.7,
+    cursor: 'pointer',
+  },
+  presetRow: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 },
 
   statusRow: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
   badge: {

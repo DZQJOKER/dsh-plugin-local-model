@@ -7,6 +7,8 @@
  *   3. 按需加载：选定模型后，第一条对话自动拉起 llama-server 并载入模型；
  *   4. 空闲卸载：连续 5 分钟（可配）无对话交互即卸载模型、释放显存与内存。
  *
+ * 设置页顶部还有一块「参数预设」：把整套加载/推理参数存成带名字的条目，一键切换。
+ *
  * 遵循 dsh 插件契约：只用具名导出（name / inject / Config / apply），
  * 绝不使用 export default —— Loader 的 unwrapExports 会把默认导出折叠掉，
  * 连带丢掉 inject 等元数据，且不报错。
@@ -16,7 +18,7 @@ import { type LocalModelConfig } from './config.js';
 /** 诊断信息里显示的插件名。 */
 export declare const name = "local-model";
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export declare const PLUGIN_VERSION = "0.4.2";
+export declare const PLUGIN_VERSION = "0.5.0";
 /**
  * 硬依赖：无。
  *

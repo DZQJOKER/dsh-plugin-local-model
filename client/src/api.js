@@ -31,3 +31,17 @@ export const saveConfig = (values, unset) => request('/config', JSON_POST({ valu
 export const resetConfig = () => request('/reset', JSON_POST({}))
 
 export const runAction = (action) => request('/action', JSON_POST({ action }))
+
+/*
+ * 参数预设。五个动作都在同一个前缀下，返回值与 /config 一样是完整 state ——
+ * 于是界面拿到结果直接 setState 即可，不需要自己拼状态。
+ */
+export const savePreset = (name, values) => request('/presets/save', JSON_POST({ name, values }))
+
+export const applyPreset = (id) => request('/presets/apply', JSON_POST({ id }))
+
+export const overwritePreset = (id, values) => request('/presets/overwrite', JSON_POST({ id, values }))
+
+export const renamePreset = (id, name) => request('/presets/rename', JSON_POST({ id, name }))
+
+export const deletePreset = (id) => request('/presets/delete', JSON_POST({ id }))

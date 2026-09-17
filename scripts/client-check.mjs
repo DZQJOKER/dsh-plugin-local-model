@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(here, '..')
@@ -202,6 +202,81 @@ step('分区标题取词可用（侧栏会显示「本地模型」）', () => {
 step('注册的一切都可逆（分区与词条都能被卸载掉）', () => {
   assert.equal(disposers.length, 2, `应当有 2 个 disposer（locale + section），实际 ${disposers.length}`)
   for (const dispose of disposers) assert.equal(typeof dispose, 'function')
+})
+
+/*
+ * 客户端与宿主的「接口契约」检查。
+ *
+ * 这一对最容易悄悄错位：客户端 fetch 的路径、宿主 switch 里的 case，两边各自改各自的，
+ * 谁都不会报错 —— 表现只是「点了没反应」。所以直接从两边各取一份事实来对，而不是靠人记。
+ */
+step('参数预设：客户端调用的路由，宿主侧全都存在', () => {
+  const called = [...new Set([...source.matchAll(/["'`]\/presets\/([a-z]+)["'`]/g)].map((m) => m[1]))].sort()
+  assert.deepEqual(
+    called,
+    ['apply', 'delete', 'overwrite', 'rename', 'save'],
+    `客户端用到的预设接口是 ${called.join(' / ')}，与预期不符`,
+  )
+
+  const hostSource = fs.readFileSync(path.join(projectRoot, 'src', 'webBridge.ts'), 'utf8')
+  for (const route of called) {
+    assert.ok(
+      hostSource.includes(`case '/presets/${route}':`),
+      `客户端在调 /presets/${route}，但 webBridge.ts 里没有这条路由 —— 点了就会 404`,
+    )
+  }
+})
+
+step('参数预设：设置页顶部那一块确实被打进了产物', () => {
+  assert.ok(source.includes('保存为预设'), '产物里找不到「保存为预设」，预设条可能没被渲染进页面')
+  assert.ok(source.includes('presets'), '产物里没有引用宿主返回的 presets 字段')
+
+  // 「固定在顶部」是需求里的硬约束，所以直接钉住渲染顺序，而不是靠人肉记得别把它挪下去。
+  const sectionSource = fs.readFileSync(path.join(projectRoot, 'client', 'src', 'section.jsx'), 'utf8')
+  const barAt = sectionSource.indexOf('<PresetBar')
+  const statusAt = sectionSource.indexOf('S.statusRow')
+  assert.ok(barAt > -1, 'section.jsx 里没有渲染 <PresetBar>')
+  assert.ok(statusAt > -1, '找不到运行状态卡的位置锚点（S.statusRow）')
+  assert.ok(barAt < statusAt, '预设条必须排在运行状态卡之前 —— 它要固定在设置页顶部')
+})
+
+/*
+ * 快照逻辑是纯函数（client/src/presetSnapshot.js），所以能在这里直接测 ——
+ * 「存错一套参数」是这块功能最贵的失败方式，不该只靠浏览器里点一遍来发现。
+ */
+const snapshotModule = await import(pathToFileURL(path.join(projectRoot, 'client', 'src', 'presetSnapshot.js')).href)
+
+step('参数预设快照：字段类型表来自宿主，界面不自己猜', () => {
+  const kinds = snapshotModule.fieldKindMap([
+    { id: 'a', fields: [{ key: 'ctxSize', kind: 'number' }, { key: 'mtp', kind: 'boolean' }] },
+    { id: 'b', fields: [{ key: 'selectedModel', kind: 'string' }] },
+  ])
+  assert.deepEqual(kinds, { ctxSize: 'number', mtp: 'boolean', selectedModel: 'string' })
+  assert.deepEqual(snapshotModule.fieldKindMap(undefined), {}, '拿不到表单描述也不能炸')
+})
+
+step('参数预设快照：草稿优先 / 空数字回落 / 字符串空值保留', () => {
+  const keys = ['ctxSize', 'temp', 'selectedModel', 'mtp']
+  const kinds = { ctxSize: 'number', temp: 'number', selectedModel: 'string', mtp: 'boolean' }
+  const config = { ctxSize: 8192, temp: 0.75, selectedModel: 'a.gguf', mtp: false }
+  const snap = (draft, cfg = config) => snapshotModule.buildPresetSnapshot({ keys, kinds, draft, config: cfg })
+
+  assert.deepEqual(snap({}), config, '没有草稿时，快照就是当前生效配置')
+
+  const edited = snap({ ctxSize: '16384', temp: '0.5' })
+  assert.equal(edited.ctxSize, '16384', '草稿优先级高于已保存配置（宿主负责类型强制转换）')
+  assert.equal(edited.temp, '0.5')
+  assert.equal(edited.selectedModel, 'a.gguf', '没改过的字段照抄当前值')
+
+  assert.equal(snap({ ctxSize: '' }).ctxSize, 8192, '数字框被清空 = 未设置，回落到已保存值（空串会被宿主丢掉）')
+  assert.equal(snap({ temp: '   ' }).temp, 0.75, '只有空白也算没填')
+  assert.equal(snap({ selectedModel: '' }).selectedModel, '', '字符串的空串是合法取值，不能被回落掉')
+  assert.equal(snap({ mtp: false }, { ...config, mtp: true }).mtp, false, '布尔 false 是明确的取值，不是「空」')
+  assert.deepEqual(
+    Object.keys(snap({ port: 1234 })).sort(),
+    [...keys].sort(),
+    '只取宿主认定的预设字段，界面不自己扩大作用域',
+  )
 })
 
 console.log(`\n通过 ${passed}，失败 ${failed}`)

@@ -4,6 +4,7 @@ import type { Log } from './log.js';
 import type { LocalModelRuntime } from './lifecycle.js';
 import type { ConfigStore } from './configStore.js';
 import type { FormDescriptor } from './schemaForm.js';
+import { type PresetStore } from './presets.js';
 /** 同源路由前缀。浏览器侧直接 fetch 相对路径，不跨端口、不需要 CORS。 */
 export declare const BRIDGE_PREFIX = "/api/local-model";
 /** 宿主 webServer 服务里我们用到的那一小部分。 */
@@ -18,6 +19,8 @@ export interface WebServerLike {
 export interface WebBridgeOptions {
     runtime: LocalModelRuntime;
     store: ConfigStore;
+    /** 参数预设的落盘仓库（与 config.json 同目录）。 */
+    presets: PresetStore;
     /** 每次配置变化后重建（分组顺序跟着 schema 走）。 */
     form: () => FormDescriptor;
     pluginVersion: string;

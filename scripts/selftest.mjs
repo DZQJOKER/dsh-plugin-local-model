@@ -11,7 +11,7 @@
  * 需要先构建：tsc -p tsconfig.json（或 npm run build）。
  */
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -37,6 +37,15 @@ import {
 import { diagnoseLoadFailure, extractEffectiveContext } from '../lib/llama/diagnose.js'
 import { shouldUnload } from '../lib/lifecycle.js'
 import { buildRouteProfile, buildRouteSpec, renderRouteYaml } from '../lib/llmBridge.js'
+import {
+  MAX_PRESETS,
+  PRESET_EXCLUDED_KEYS,
+  PresetStore,
+  normalizePresetName,
+  presetKeys,
+  sanitizePresetValues,
+  snapshotPresetValues,
+} from '../lib/presets.js'
 
 let passed = 0
 let failed = 0
@@ -1410,6 +1419,233 @@ test('shouldUnload：真活请求期间 lastActivityAt 会被刷新，不会触�
     '真活请求停止后到 2× 时长强制卸',
   )
 })
+
+// ── 参数预设 ────────────────────────────────────────────────────────────────
+section('参数预设（保存 / 切换 / 落盘）')
+
+test('预设作用域 = 全部可写字段 − 环境字段', () => {
+  const keys = presetKeys()
+  // 参数必须进预设：这些才是「一套参数」的内容。
+  for (const key of ['selectedModel', 'mmprojFile', 'mtp', 'ctxSize', 'temp', 'topP', 'kvStreamStageMib', 'extraArgs']) {
+    assert.ok(keys.includes(key), `${key} 必须进预设，否则这个功能没意义`)
+  }
+  // 环境字段必须排除：切预设不该把端口/路径/密钥也带着跑。
+  for (const key of PRESET_EXCLUDED_KEYS) {
+    assert.equal(keys.includes(key), false, `${key} 不该进预设`)
+  }
+  assert.ok(keys.length > 30, `预设字段数应当接近全部可写字段，实际 ${keys.length}`)
+})
+
+test('预设名称归一化：去空白 / 压连续空白 / 按码点截断', () => {
+  assert.equal(normalizePresetName('  看图模式  '), '看图模式')
+  assert.equal(normalizePresetName('长\t文本\n模式'), '长 文本 模式')
+  assert.equal(normalizePresetName('   '), '', '全是空白等于没填名字')
+  assert.equal(normalizePresetName(undefined), '')
+  assert.equal(normalizePresetName(123), '')
+  assert.equal([...normalizePresetName('あ'.repeat(50))].length, 40, '超长名称按码点截断，不能切断代理对')
+  assert.ok(normalizePresetName('😀'.repeat(50)).length <= 40 * 2, '截断后不该出现半个字符导致的乱码')
+})
+
+test('预设值过写入闸门：类型强制转换 + 丢弃未知键与环境键', () => {
+  const clean = sanitizePresetValues({
+    ctxSize: '4096',
+    temp: '0.75',
+    mtp: 'true',
+    selectedModel: 'VLM-Q4_K_M.gguf',
+    envOverrides: { CUDA_VISIBLE_DEVICES: '0', 非法: 5 },
+    port: '18081',
+    apiKey: 'secret',
+    logLevel: 'debug',
+    不存在的字段: 'x',
+  })
+  assert.deepEqual(clean, {
+    ctxSize: 4096,
+    temp: 0.75,
+    mtp: true,
+    selectedModel: 'VLM-Q4_K_M.gguf',
+    envOverrides: { CUDA_VISIBLE_DEVICES: '0' },
+  })
+  assert.equal(clean.port, undefined, '端口属于环境，不进预设')
+  assert.equal(clean.apiKey, undefined, '密钥不该在预设文件里再存一份明文')
+  assert.equal(clean.logLevel, undefined)
+})
+
+test('从生效配置摘快照：拿到参数、拿不到环境字段', () => {
+  const resolved = resolveConfig({ port: 18081, apiKey: 'k', temp: 0.5 }, { DSH_HOME: '/tmp/dsh' })
+  const snapshot = snapshotPresetValues(resolved)
+  assert.equal(snapshot.temp, 0.5)
+  assert.equal(snapshot.ctxSize, 8192)
+  assert.equal(snapshot.port, undefined)
+  assert.equal(snapshot.apiKey, undefined)
+  assert.equal(snapshot.modelsDir, undefined, '路径是部署环境，不是可切换的参数')
+})
+
+const presetDir = await mkdtemp(path.join(os.tmpdir(), 'dsh-presets-'))
+const presetFile = path.join(presetDir, 'presets.json')
+
+// 一串用例共享同一个仓库实例，顺序即生命周期：建 → 查 → 覆盖 → 改名 → 删。
+const store = new PresetStore(presetFile)
+await store.load()
+let savedA = null
+let savedB = null
+
+await testAsync('保存两组预设并落盘', async () => {
+  assert.deepEqual(store.list(), [], '空目录里应当没有任何预设')
+  savedA = await store.create('  看图模式 ', { ctxSize: '16384', mmprojFile: 'mmproj-x.gguf' })
+  savedB = await store.create('长文本', { ctxSize: 65536, cacheTypeK: 'q8_0', topP: 0.9 })
+  assert.equal(savedA.name, '看图模式', '名称应当被归一化')
+  assert.equal(savedA.values.ctxSize, 16384, '字符串数字应当被转换')
+  assert.equal(store.list().length, 2)
+
+  const onDisk = JSON.parse(await readFile(presetFile, 'utf8'))
+  assert.equal(onDisk.items.length, 2, '必须真的落盘，否则重启就丢了')
+  assert.equal(onDisk.items[0].name, '看图模式')
+  assert.equal(onDisk.items[1].values.ctxSize, 65536)
+  assert.equal(onDisk.items[0].port, undefined, '环境字段不该出现在预设文件里')
+})
+
+await testAsync('重开一个仓库实例能读回同一批预设（往返一致）', async () => {
+  const reopened = new PresetStore(presetFile)
+  await reopened.load()
+  assert.equal(reopened.loadWarning, null)
+  const list = reopened.list()
+  assert.equal(list.length, 2)
+  assert.equal(list[0].id, savedA.id, 'id 必须稳定 —— 界面靠它做切换与高亮')
+  assert.deepEqual(list[1].values, savedB.values)
+})
+
+await testAsync('名称重复被拒绝（不区分大小写），空名称被拒绝', async () => {
+  await assert.rejects(() => store.create('看图模式', { ctxSize: 1 }), /已经有一个叫/)
+  await assert.rejects(() => store.create('  长文本  ', { ctxSize: 1 }), /已经有一个叫/, '归一化之后再比，两端空白不该绕过重名检查')
+  savedB = await store.create('abc', { ctxSize: 1 })
+  await assert.rejects(() => store.create('ABC', { ctxSize: 1 }), /已经有一个叫/, '大小写不同也是同一个名字')
+  await assert.rejects(() => store.create('   ', { ctxSize: 1 }), /名称不能为空/)
+})
+
+await testAsync('一项参数都没有的预设被拒绝', async () => {
+  await assert.rejects(() => store.create('空的', {}), /没有任何可保存的项/)
+  await assert.rejects(() => store.create('只有环境字段', { port: 18081, logLevel: 'debug' }), /没有任何可保存的项/)
+})
+
+await testAsync('覆盖：名称不变、参数整套换掉、时间戳前进', async () => {
+  const before = store.find(savedA.id)
+  const updated = await store.overwrite(savedA.id, { ctxSize: 32768, mtp: 'true' })
+  assert.equal(updated.id, before.id)
+  assert.equal(updated.name, before.name, '覆盖不该动名字')
+  assert.deepEqual(updated.values, { ctxSize: 32768, mtp: true }, '覆盖是整套替换，不是合并')
+  assert.ok(updated.updatedAt >= before.updatedAt)
+  await assert.rejects(() => store.overwrite('不存在的 id', { ctxSize: 1 }), /找不到这个预设/)
+})
+
+await testAsync('重命名：能改、不能撞名、不能改成空', async () => {
+  const renamed = await store.rename(savedA.id, ' 看图（高精度） ')
+  assert.equal(renamed.name, '看图（高精度）')
+  assert.equal(store.find(savedA.id).name, '看图（高精度）')
+  await assert.rejects(() => store.rename(savedA.id, 'abc'), /已经有一个叫/)
+  await assert.rejects(() => store.rename(savedA.id, '   '), /名称不能为空/)
+  assert.equal(store.find(savedA.id).name, '看图（高精度）', '失败的改名不该留下半个结果')
+  assert.equal((await store.rename(savedA.id, '看图（高精度）')).name, '看图（高精度）', '改成自己原来的名字应当允许')
+})
+
+await testAsync('删除：删掉指定的那一个，其余不受影响', async () => {
+  assert.deepEqual(store.list().map((p) => p.name).sort(), ['abc', '看图（高精度）', '长文本'].sort(), '删之前有 3 组')
+  const removed = await store.remove(savedB.id)
+  assert.equal(removed.name, 'abc')
+  assert.equal(store.find(savedB.id), undefined)
+  assert.deepEqual(store.list().map((p) => p.name).sort(), ['看图（高精度）', '长文本'].sort(), '只该删掉指定的那一组')
+  await assert.rejects(() => store.remove(savedB.id), /找不到这个预设/)
+
+  const onDisk = JSON.parse(await readFile(presetFile, 'utf8'))
+  assert.equal(onDisk.items.length, 2, '删除也要落盘')
+})
+
+test('差异计数与「当前生效」判定', () => {
+  const s = new PresetStore(path.join(presetDir, 'nowhere.json'))
+  const current = { ctxSize: 8192, temp: 0.75, mtp: false, port: 18080, logLevel: 'info' }
+  assert.equal(s.diffCount({ ctxSize: 8192, temp: 0.75 }, current), 0, '一致的项不计入')
+  assert.equal(s.diffCount({ ctxSize: 4096, temp: 0.75 }, current), 1)
+  assert.equal(s.diffCount({ ctxSize: 4096, mtp: true }, current), 2)
+  assert.equal(s.diffCount({}, current), 0, '空预设没有可比的项')
+  assert.equal(s.diffCount({ envOverrides: { A: '1' } }, { envOverrides: { A: '1' } }), 0, '字典字段按结构比')
+  assert.equal(s.diffCount({ envOverrides: { A: '1' } }, { envOverrides: { A: '2' } }), 1)
+  // 环境字段不参与预设，因此「当前配置的端口变了」不该让任何预设变成「有差异」。
+  assert.equal(s.diffCount({ ctxSize: 8192 }, { ctxSize: 8192, port: 9999 }), 0)
+})
+
+await testAsync('activeId 只认「完全一致且非空」的那一个', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-presets-active-'))
+  const s = new PresetStore(path.join(dir, 'presets.json'))
+  await s.load()
+  const a = await s.create('A', { ctxSize: 4096, temp: 0.5 })
+  await s.create('B', { ctxSize: 8192 })
+  assert.equal(s.activeId({ ctxSize: 4096, temp: 0.5, port: 18080 }), a.id, '忽略不在预设里的字段')
+  assert.equal(s.activeId({ ctxSize: 4096, temp: 0.6 }), null)
+  assert.equal(s.activeId({ ctxSize: 123 }), null)
+  await rm(dir, { recursive: true, force: true })
+})
+
+await testAsync('预设文件损坏 / 内容离谱时：降级为空，插件照常起', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-presets-broken-'))
+  const file = path.join(dir, 'presets.json')
+  await writeFile(file, '{ 这不是 JSON', 'utf8')
+  const s = new PresetStore(file)
+  await s.load()
+  assert.deepEqual(s.list(), [])
+  assert.ok(s.loadWarning && s.loadWarning.includes('解析失败'), '损坏必须在界面上说清楚，而不是静默当没有')
+  await s.create('新预设', { temp: 1 })
+  assert.equal(s.list().length, 1, '损坏之后仍然能正常保存新预设')
+  await rm(dir, { recursive: true, force: true })
+})
+
+await testAsync('加载时剔除无效条目：缺名字 / 缺 id / 重复 id / 没有参数', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-presets-dirty-'))
+  const file = path.join(dir, 'presets.json')
+  const at = new Date().toISOString()
+  await writeFile(
+    file,
+    JSON.stringify({
+      version: 1,
+      updatedAt: at,
+      items: [
+        { id: 'a', name: '正常的', createdAt: at, updatedAt: at, values: { temp: 1 } },
+        { id: '', name: '没有 id', values: { temp: 1 } },
+        { id: 'c', name: '   ', values: { temp: 1 } },
+        { id: 'a', name: '重复 id', values: { temp: 1 } },
+        { id: 'e', name: '没有参数', values: {} },
+        { id: 'f', name: '参数全在作用域外', values: { port: 1, apiKey: 'x' } },
+        { id: 'g', name: '坏类型', values: { ctxSize: '不是数字', temp: '0.5' } },
+      ],
+    }),
+    'utf8',
+  )
+  const s = new PresetStore(file)
+  await s.load()
+  const list = s.list()
+  assert.deepEqual(list.map((p) => p.id), ['a', 'g'])
+  assert.deepEqual(list[1].values, { temp: 0.5 }, '坏值被丢掉，好值留下来')
+  assert.ok(s.loadWarning && s.loadWarning.includes('跳过'))
+  await rm(dir, { recursive: true, force: true })
+})
+
+await testAsync('加载时按上限截断，不会把界面塞爆', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-presets-cap-'))
+  const file = path.join(dir, 'presets.json')
+  const at = new Date().toISOString()
+  const items = Array.from({ length: MAX_PRESETS + 5 }, (_, i) => ({
+    id: `id-${i}`,
+    name: `预设 ${i}`,
+    createdAt: at,
+    updatedAt: at,
+    values: { temp: 1 },
+  }))
+  await writeFile(file, JSON.stringify({ version: 1, updatedAt: at, items }), 'utf8')
+  const s = new PresetStore(file)
+  await s.load()
+  assert.equal(s.list().length, MAX_PRESETS)
+  await rm(dir, { recursive: true, force: true })
+})
+
+await rm(presetDir, { recursive: true, force: true })
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────
 console.log(`\n通过 ${passed}，失败 ${failed}`)

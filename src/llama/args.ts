@@ -63,10 +63,14 @@ export interface LlamaServerArgInput {
   /**
    * 这个构建在 `--help` 里公开的选项名集合。
    *
-   * `null` = 探测失败/未知。新加入的那些只在较新构建或特定分支存在的选项
-   * （--kv-unified / --kv-stream-stage-mib / --image-*-tokens / --reasoning-budget）
-   * 只有在确认构建认得时才下发 —— 否则 llama-server 会因为未知参数**直接启动失败**，
-   * 那等于「加了个开关，插件反而起不来了」。
+   * `null` = 探测失败/未知。
+   *
+   * 探测成功时它决定**每一个**选项怎么下发，两档严格程度：
+   *   - 只有较新构建/特定分支才有的选项（--kv-unified / --kv-stream-stage-mib /
+   *     --image-*-tokens / --reasoning-budget）走严格门控：探测失败也不下发；
+   *   - 其余选项（--alias / -t / -ub / --no-mmap / --api-key / 采样参数……）走宽松门控：
+   *     只有构建**明确不公开**时才跳过。不认识选项的分支不是忽略它，而是
+   *     `unknown flag: xxx` + exit 1 直接起不来；实测那个 kvmem 独立 server 就是如此。
    */
   knownFlags: ReadonlySet<string> | null
   /** --jinja：OpenAI 风格 function calling 依赖它，默认开。 */
@@ -210,38 +214,79 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
   const args: string[] = []
   const usedFlags: string[] = []
   const notices: string[] = []
+  /** 严格门控跳过的选项（含「探测失败」这一类）。 */
+  const skipped: string[] = []
+  /** 宽松门控跳过的选项（探测成功、且这个构建确实没公开它）。 */
+  const dropped: string[] = []
 
   const flag = (...tokens: string[]): void => {
     usedFlags.push(tokens[0]!)
     args.push(...tokens)
   }
 
-  args.push(
-    '-m',
-    input.modelPath,
-    '--host',
-    input.host,
-    '--port',
-    String(input.port),
-    '--alias',
-    input.alias,
-    '-c',
-    String(input.ctxSize),
-  )
-  usedFlags.push('-m', '--host', '--port', '--alias', '-c')
+  /**
+   * 严格门控：只有「探测成功**且**构建公开了该选项」才下发。
+   *
+   * 用在「新版本 / 特定分支才有」的选项上（--kv-unified、--kv-stream-stage-mib、
+   * --image-*-tokens、--reasoning-budget）：探测失败时宁可退回构建默认值，也不赌它认。
+   */
+  const gateStrict = (...tokens: string[]): boolean => {
+    const name = tokens[0]!
+    if (!input.knownFlags || !input.knownFlags.has(name)) {
+      skipped.push(name)
+      return false
+    }
+    flag(...tokens)
+    return true
+  }
+
+  /**
+   * 宽松门控：**只要是这个构建明确不认识的就跳过**；探测失败时照旧下发。
+   *
+   * 用在「几乎所有构建都有、但不是每个都有」的选项上：--alias、-t、--threads-batch、
+   * -ub、--no-mmap、--mlock、--api-key、--cache-type-*、采样参数那一组。
+   * 两条规则各自解决一个具体问题：
+   *
+   *   - 探测失败（knownFlags 为 null）→ **照旧下发**。这是与引入门控前完全一致的行为：
+   *     一次 --help 失败就把别名、线程数、全部采样设置丢掉，比「可能不认识」糟糕得多。
+   *   - 探测成功但不认识 → **跳过**。这一条不是可选项：不认识选项的分支不是「忽略它」，
+   *     而是直接 `unknown flag: --alias` 然后 exit 1，整台服务起不来。
+   *     实测（kvmem-v0.16.0-rc2 的独立 server）：--alias / -t / -ub / --repeat-last-n /
+   *     --no-mmap / --api-key 全部是 `unknown flag: xxx` + usage + exit 1。
+   *
+   * 跳过的一律记进 notices，绝不静默 —— 用户看到的应该是「哪几个选项被跳过了」，
+   * 而不是命令行里少了一项却毫无线索。
+   */
+  const gateLoose = (...tokens: string[]): boolean => {
+    const name = tokens[0]!
+    if (input.knownFlags && !input.knownFlags.has(name)) {
+      dropped.push(name)
+      return false
+    }
+    flag(...tokens)
+    return true
+  }
+
+  // -m / --host / --port / -c 是「llama-server 兼容」的最小契约，不做门控：
+  // 连这几个都没有的二进制本来就不是 llama-server，跳过它们只会拼出一条毫无意义的命令行。
+  flag('-m', input.modelPath)
+  flag('--host', input.host)
+  flag('--port', String(input.port))
+  gateLoose('--alias', input.alias)
+  flag('-c', String(input.ctxSize))
 
   // GPU 层数：默认 auto，让 llama.cpp 的 --fit 按可用显存决定，避免「放不下就崩」。
   const gpu = gpuLayersArgs(input.gpuLayersMode, input.gpuLayers, input.gpuLayersSupport)
-  if (gpu.args.length > 0) flag(...gpu.args)
+  if (gpu.args.length > 0) gateLoose(...gpu.args)
   if (gpu.notice) notices.push(gpu.notice)
 
-  if (input.threads > 0) flag('-t', String(input.threads))
-  if (input.threadsBatch > 0) flag('--threads-batch', String(input.threadsBatch))
-  if (input.batchSize > 0) flag('-b', String(input.batchSize))
+  if (input.threads > 0) gateLoose('-t', String(input.threads))
+  if (input.threadsBatch > 0) gateLoose('--threads-batch', String(input.threadsBatch))
+  if (input.batchSize > 0) gateLoose('-b', String(input.batchSize))
   if (input.ubatchSize > 0) {
     // -ub 必须 <= -b，否则 llama.cpp 直接启动失败。这里就地收敛，避免把矛盾参数丢给子进程。
     const ub = input.batchSize > 0 ? Math.min(input.ubatchSize, input.batchSize) : input.ubatchSize
-    flag('-ub', String(ub))
+    gateLoose('-ub', String(ub))
   }
 
   const flash = flashAttnArgs(input.flashAttention, input.flashAttnMode)
@@ -251,9 +296,9 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
   // KV cache 量化。'auto' 不下发，其它下发对应值。'auto' 与 flashAttention 的 'auto'
   // 语义一致：不参与决策、把选择权完整交给 llama.cpp。
   const cacheK = normalizeCacheType(input.cacheTypeK)
-  if (cacheK !== 'auto') flag('--cache-type-k', cacheK)
+  if (cacheK !== 'auto') gateLoose('--cache-type-k', cacheK)
   const cacheV = normalizeCacheType(input.cacheTypeV)
-  if (cacheV !== 'auto') flag('--cache-type-v', cacheV)
+  if (cacheV !== 'auto') gateLoose('--cache-type-v', cacheV)
 
   // ── KV 缓存策略 ──────────────────────────────────────────────────────────
   /**
@@ -264,19 +309,9 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
    * 不认识的构建收到它们会**直接启动失败**，所以宁可跳过并说明，也不能照发。
    * 探测失败（knownFlags 为 null）时同样不下发 —— 与 --flash-attn 的取舍一致。
    */
-  const skipped: string[] = []
-  /** 返回是否真的下发了 —— 有前置条件的参数要靠这个判断（见下面的 -np 1）。 */
-  const gate = (...tokens: string[]): boolean => {
-    const name = tokens[0]!
-    if (!input.knownFlags || !input.knownFlags.has(name)) {
-      skipped.push(name)
-      return false
-    }
-    flag(...tokens)
-    return true
-  }
+  // 两个门控函数（gateStrict / gateLoose）与 skipped / dropped 两本账都定义在函数开头。
 
-  if (input.kvUnified) gate('--kv-unified')
+  if (input.kvUnified) gateStrict('--kv-unified')
 
   /**
    * 块级 KV 流式 + 单序列约束。
@@ -292,7 +327,7 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
    * 平白把并发降到 1 是没有理由的行为变更。
    */
   const stageMib = Math.round(input.kvStreamStageMib)
-  if (stageMib > 0 && gate('--kv-stream-stage-mib', String(stageMib))) {
+  if (stageMib > 0 && gateStrict('--kv-stream-stage-mib', String(stageMib))) {
     const extraTokens = splitArgs(input.extraArgs)
     if (extraTokens.some((token) => token === '-np' || token === '--parallel')) {
       // 用户显式写过就不覆盖 —— 但必须说清后果，否则他只会看到一句难懂的英文错误。
@@ -310,56 +345,74 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
   }
 
   // ── 采样参数 ────────────────────────────────────────────────────────────
-  // 这些（-s/temp/top-k/top-p/min-p/penalties/repeat-last-n）在几乎所有 llama.cpp 版本里
-  // 都存在，因此**不**按探测门控；否则一次探测失败就会静默丢掉全部采样设置。
-  flag('--temp', formatNumber(input.temp))
-  flag('--top-k', String(Math.round(input.topK)))
-  flag('--top-p', formatNumber(input.topP))
-  flag('--min-p', formatNumber(input.minP))
-  flag('--presence-penalty', formatNumber(input.presencePenalty))
-  flag('--repeat-penalty', formatNumber(input.repeatPenalty))
-  flag('--repeat-last-n', String(Math.round(input.repeatLastN)))
-  flag('--seed', String(Math.round(input.seed)))
+  // 这些（--temp/top-k/top-p/min-p/penalties/repeat-last-n/seed）在几乎所有 llama.cpp
+  // 版本里都存在，所以走**宽松**门控：探测失败时照旧全量下发（于是一次 --help 失败不会
+  // 静默丢掉全部采样设置），只有构建明确不公开其中某一项时才跳过那一项。
+  // 「明确不公开」不是理论情况：kvmem 那个独立 server 就没有 --repeat-last-n，
+  // 发过去就是 `unknown flag: --repeat-last-n` + exit 1。
+  gateLoose('--temp', formatNumber(input.temp))
+  gateLoose('--top-k', String(Math.round(input.topK)))
+  gateLoose('--top-p', formatNumber(input.topP))
+  gateLoose('--min-p', formatNumber(input.minP))
+  gateLoose('--presence-penalty', formatNumber(input.presencePenalty))
+  gateLoose('--repeat-penalty', formatNumber(input.repeatPenalty))
+  gateLoose('--repeat-last-n', String(Math.round(input.repeatLastN)))
+
+  /**
+   * 种子：**负数一律不下发**。
+   *
+   * 语义上没有任何损失：llama.cpp 里 seed < 0 就是「随机」，而它的默认值本来就是 -1 ——
+   * 也就是说「下发 -1」与「不下发」在标准构建上完全等价（本插件默认值就是 -1）。
+   * 但有些构建（实测 kvmem 的独立 server）按 uint32 校验取值范围：
+   *   invalid --seed: seed out of range [0.000000, 4294967295.000000]  → exit 1
+   * 于是「默认设置直接起不来」。既然负数不表达任何额外信息，一律不下发 ——
+   * 一条规则同时满足「标准构建语义不变」与「取值范围收窄的构建也能起来」。
+   */
+  const seed = Math.round(input.seed)
+  if (seed >= 0) gateLoose('--seed', String(seed))
 
   // ── 多模态图像预算 ──────────────────────────────────────────────────────
   // max 必须 >= min，否则 llama.cpp 拒绝启动。就地收敛，与 -ub <= -b 同一处规则。
   const imageMin = Math.max(0, Math.round(input.imageMinTokens))
   const imageMax = Math.max(imageMin, Math.round(input.imageMaxTokens))
-  if (imageMin > 0) gate('--image-min-tokens', String(imageMin))
-  if (imageMax > 0) gate('--image-max-tokens', String(imageMax))
+  if (imageMin > 0) gateStrict('--image-min-tokens', String(imageMin))
+  if (imageMax > 0) gateStrict('--image-max-tokens', String(imageMax))
 
   // ── 推理预算 ────────────────────────────────────────────────────────────
   // 0 是有意义的取值（关掉思考），所以不按「> 0」判断，只在构建支持时才下发。
-  gate('--reasoning-budget', String(Math.round(input.reasoningBudget)))
+  gateStrict('--reasoning-budget', String(Math.round(input.reasoningBudget)))
 
-  if (skipped.length > 0) {
+  // 两本账合成一条提示：被跳过的可能既有「只有新构建才有的」（strict）也有
+  // 「这个分支干脆没有的」（loose），但对用户是同一件事 —— 哪几个选项没发出去。
+  const notRecognized = [...skipped, ...dropped]
+  if (notRecognized.length > 0) {
     notices.push(
       input.knownFlags
-        ? `这个 llama-server 不认识以下选项，已跳过（不影响加载）：${skipped.join('、')}`
-        : `无法探测这个 llama-server 支持哪些选项，已跳过：${skipped.join('、')}（宁可退回构建默认值，也不赌它认）`,
+        ? `这个 llama-server 不认识以下选项，已跳过（不影响加载）：${notRecognized.join('、')}`
+        : `无法探测这个 llama-server 支持哪些选项，已跳过：${notRecognized.join('、')}（宁可退回构建默认值，也不赌它认）`,
     )
   }
 
-  if (input.jinja) flag('--jinja')
-  if (input.chatTemplate.trim()) flag('--chat-template', input.chatTemplate.trim())
+  if (input.jinja) gateLoose('--jinja')
+  if (input.chatTemplate.trim()) gateLoose('--chat-template', input.chatTemplate.trim())
 
   // MTP 与视觉投影互斥 —— 这条规则实现在这里而不是调用方，是因为这里才是
   // 「参数真正被拼出来的地方」：只要 mtp 为真，mmproj 就绝不可能漏下去。
   const mmproj = input.mmproj.trim()
   if (input.mtp) {
-    flag('--spec-type', 'draft-mtp')
+    gateLoose('--spec-type', 'draft-mtp')
     if (mmproj) {
       notices.push(
         '已开启 MTP，视觉投影文件（--mmproj）被自动忽略：llama.cpp 的 MTP 与图像输入不能同时使用',
       )
     }
   } else if (mmproj) {
-    flag('--mmproj', mmproj)
+    gateLoose('--mmproj', mmproj)
   }
 
-  if (!input.mmap) flag('--no-mmap')
-  if (input.mlock) flag('--mlock')
-  if (input.apiKey.trim()) flag('--api-key', input.apiKey.trim())
+  if (!input.mmap) gateLoose('--no-mmap')
+  if (input.mlock) gateLoose('--mlock')
+  if (input.apiKey.trim()) gateLoose('--api-key', input.apiKey.trim())
 
   args.push(...splitArgs(input.extraArgs))
 

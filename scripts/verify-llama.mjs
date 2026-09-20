@@ -39,10 +39,16 @@ const flag = (name) => {
 const SENTINEL_MODEL = path.join(os.tmpdir(), '__local_model_arg_probe__.gguf')
 
 const ARG_ERROR_PATTERNS = [
+  // 分支构建（如 kvmem 那个独立 server）对不认识的选项是 `unknown flag: --alias` + usage + exit 1。
+  // 少了这一条，这类「参数被拒」会被下面的判断漏成「没有出现参数错误」—— 本脚本也就白跑了。
+  /unknown flag/i,
   /error while handling argument/i,
   /unknown (value|argument)/i,
   /unrecognized argument/i,
   /invalid argument/i,
+  // 取值范围/形态错误也是参数问题：实测 kvmem 会对 -1 的 --seed 报
+  // `invalid --seed: seed out of range [0.000000, 4294967295.000000]` 并退出。
+  /invalid --[A-Za-z0-9-]+:/i,
   /to show complete usage/i,
 ]
 

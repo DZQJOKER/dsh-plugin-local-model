@@ -873,7 +873,17 @@ test('采样参数全部显式下发（这几项的默认值与 llama.cpp 自身
   assert.equal(flagValue(args, '--presence-penalty'), '0')
   assert.equal(flagValue(args, '--repeat-penalty'), '1')
   assert.equal(flagValue(args, '--repeat-last-n'), '64')
-  assert.equal(flagValue(args, '--seed'), '-1')
+  // seed 单独成例：SAMPLING 里是 -1（= 随机），负数不下发，见下一条用例。
+  assert.equal(flagIndex(args, '--seed'), -1, 'seed=-1 不下发')
+})
+
+test('种子：负数不下发（等价于随机），非负才显式下发', () => {
+  const negative = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, seed: -1 })
+  assert.equal(flagIndex(negative.args, '--seed'), -1, '负数不下发')
+  assert.equal(flagIndex(negative.args, '-s'), -1, '两种写法都不该出现')
+
+  const fixed = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, seed: 12345 })
+  assert.equal(flagValue(fixed.args, '--seed'), '12345', '固定的种子必须显式下发（可复现输出）')
 })
 
 test('浮点值不会把浮点噪声带进命令行', () => {
@@ -988,6 +998,121 @@ test('门控：探测失败时一律不下发（与 --flash-attn 同一取舍）
   assert.equal(flagIndex(built.args, '--reasoning-budget'), -1)
   assert.equal(built.notices.length, 1)
   assert.ok(built.notices[0].includes('无法探测'), `提示应说明是探测失败，实际：${built.notices[0]}`)
+})
+
+// ── 非 llama.cpp 的分支构建（本次线上故障的回归防线）────────────────────────
+section('分支构建：只下发它 --help 里公开的选项')
+
+/**
+ * 实机样本：kvmem-v0.16.0-rc2 的 `--help` 原文（Windows / cuda 构建，括号里是原文）。
+ *
+ * 这是个**独立的 OpenAI 兼容 server**，不是 llama.cpp 的 llama-server：它的选项表是
+ * llama.cpp 的一个真子集。插件原先固定下发的 --alias 在这里根本不存在，于是
+ *   unknown flag: --alias
+ *   usage: ...llama-kvmem-server.exe -m model.gguf [options]
+ * 退出码 1 —— 「换了个 llama 分支，插件就起不来了」。
+ */
+const KVMEM_HELP = [
+  '-m, --model PATH           GGUF path',
+  '--mmproj PATH              vision projector GGUF',
+  '--mmproj-offload           place vision encoder on GPU (default)',
+  '--no-mmproj-offload        place vision encoder on CPU',
+  '--image-min-tokens N       native minimum image token count',
+  '--image-max-tokens N       native maximum image token count',
+  '--host HOST                bind address (default 127.0.0.1)',
+  '--port N                   port (default 8080)',
+  '--ui-dir PATH              serve static chat UI from PATH',
+  '--no-ui                    disable bundled chat UI',
+  '-c, --ctx-size N           context size (default 2048)',
+  '-n, --n-predict N          default max_tokens (default 128)',
+  '-b, --batch-size N         logical batch (default 512)',
+  '-ngl, --n-gpu-layers N     GPU layers (default 99)',
+  'Sampling defaults: Qwen3.8-27B Thinking / non-Thinking, selected per request.',
+  '--temp, --temperature T    temperature [0,2] (1.0 / 0.7); 0 = greedy',
+  '--top-p P                  nucleus threshold [0,1] (0.95 / 0.80)',
+  '--top-k K                  integer >= 0; 0 disables (20)',
+  '--min-p P                  minimum relative probability [0,1] (0)',
+  '--presence-penalty P       presence penalty [-2,2] (0 / 1.5)',
+  '--frequency-penalty P      frequency penalty [-2,2] (0)',
+  '--repeat-penalty P         repetition penalty > 0 (1); --repetition-penalty alias',
+  '--seed N                   uint32 seed (default random)',
+  '                           request fields override these process defaults',
+  '--kvmem / --no-kvmem       enable KVMem (default on)',
+  '--kv-dtype NAME            GPU KV cache type for K and V: f16 | f32 | q8_0 | q5_0 | q4_0 (default q8_0)',
+  '-ctk, --cache-type-k TYPE  GPU K cache type (llama.cpp name; default q8_0)',
+  '-ctv, --cache-type-v TYPE  GPU V cache type (must match K when quantized)',
+  '--spec-type TYPE           none | draft-mtp (default none)',
+  '--jinja                    native Jinja rendering (always enabled)',
+  '--chat-template TEMPLATE   override model chat template (Jinja text)',
+  '--reasoning-effort LEVEL   template effort; default uses template default, none disables thinking',
+  '--enable-thinking          Qwen thinking on (default off; request can override)',
+  '--no-think                 force thinking off',
+  '--reasoning-budget N       thinking token budget: -1 unlimited, 0 end immediately,',
+  '                           N>0 force </think> after N think tokens (default -1)',
+  '--reasoning-budget-message MSG  injected before forced </think> (default none)',
+].join('\n')
+
+test('kvmem 构建：默认配置下的每一个选项都被接受（不再有 unknown flag）', () => {
+  const caps = parseHelp(KVMEM_HELP)
+  // 这个构建是**严格**解析：不认识就 `unknown flag: xxx` + usage + exit 1。
+  const built = buildArgs({
+    ...kvBaseInput,
+    ...NEW_PARAMS,
+    ...SAMPLING,
+    gpuLayersMode: 'auto',
+    gpuLayersSupport: caps.gpuLayers,
+    flashAttnMode: caps.flashAttnMode,
+    threads: 4,
+    threadsBatch: 4,
+    batchSize: 2048,
+    ubatchSize: 512,
+    flashAttention: 'on',
+    kvUnified: true,
+    kvStreamStageMib: 1024,
+    imageMinTokens: 1024,
+    imageMaxTokens: 4096,
+    reasoningBudget: 4096,
+    jinja: true,
+    mmap: false,
+    mlock: true,
+    apiKey: 'k',
+    knownFlags: caps.flags,
+  })
+
+  // 核心断言：下发出去的每一项都在这个构建的 --help 里 —— 这就是「能不能起来」的分界线。
+  assert.deepEqual(
+    unknownFlags(built.usedFlags, caps.flags),
+    [],
+    `下发出去的选项里有这个构建不认识的：${unknownFlags(built.usedFlags, caps.flags).join('、')}`,
+  )
+
+  // 逐项钉死：这些是实机确认过会 `unknown flag` 直接退出 1 的选项。
+  for (const flag of ['--alias', '-t', '--threads-batch', '-ub', '--repeat-last-n', '--no-mmap', '--mlock', '--api-key', '--flash-attn']) {
+    assert.equal(flagIndex(built.args, flag), -1, `${flag} 不该下发给这个构建（unknown flag，整台起不来）`)
+  }
+
+  // 它确实有的选项照旧下发，功能不被「一刀切地清空」。
+  assert.equal(flagValue(built.args, '--temp'), '0.75')
+  assert.equal(flagValue(built.args, '--top-p'), '0.95')
+  assert.equal(flagValue(built.args, '--repeat-penalty'), '1')
+  assert.equal(flagValue(built.args, '-ngl'), '-1', '这个构建不认 auto/all 关键字，退回 -1（全部层）')
+  assert.equal(flagValue(built.args, '-b'), '2048')
+  assert.equal(flagValue(built.args, '-c'), '4096')
+  assert.ok(built.args.includes('--jinja'))
+  assert.equal(flagValue(built.args, '--cache-type-k'), 'q8_0')
+  assert.equal(flagIndex(built.args, '--seed'), -1, '默认 -1 = 随机 = 不下发（它按 uint32 校验，-1 会被拒）')
+
+  // 跳过必须有说明 —— 否则用户只会看到「参数少了几个」而毫无线索。
+  assert.ok(
+    built.notices.some((n) => n.includes('不认识') && n.includes('--alias')),
+    `被跳过的选项要写进日志，实际：${built.notices.join(' | ')}`,
+  )
+})
+
+test('kvmem 构建：探测失败时不受影响（照旧全量下发，与历史行为一致）', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, ...SAMPLING, knownFlags: null })
+  assert.equal(flagValue(built.args, '--alias'), 'local', '探测失败不该把别名丢掉')
+  assert.equal(flagValue(built.args, '--repeat-last-n'), '64', '探测失败不该把采样设置丢掉')
 })
 
 test('配置：这 13 项的默认值就是用户指定的那一组', () => {

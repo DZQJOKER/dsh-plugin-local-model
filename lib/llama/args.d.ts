@@ -63,10 +63,14 @@ export interface LlamaServerArgInput {
     /**
      * 这个构建在 `--help` 里公开的选项名集合。
      *
-     * `null` = 探测失败/未知。新加入的那些只在较新构建或特定分支存在的选项
-     * （--kv-unified / --kv-stream-stage-mib / --image-*-tokens / --reasoning-budget）
-     * 只有在确认构建认得时才下发 —— 否则 llama-server 会因为未知参数**直接启动失败**，
-     * 那等于「加了个开关，插件反而起不来了」。
+     * `null` = 探测失败/未知。
+     *
+     * 探测成功时它决定**每一个**选项怎么下发，两档严格程度：
+     *   - 只有较新构建/特定分支才有的选项（--kv-unified / --kv-stream-stage-mib /
+     *     --image-*-tokens / --reasoning-budget）走严格门控：探测失败也不下发；
+     *   - 其余选项（--alias / -t / -ub / --no-mmap / --api-key / 采样参数……）走宽松门控：
+     *     只有构建**明确不公开**时才跳过。不认识选项的分支不是忽略它，而是
+     *     `unknown flag: xxx` + exit 1 直接起不来；实测那个 kvmem 独立 server 就是如此。
      */
     knownFlags: ReadonlySet<string> | null;
     /** --jinja：OpenAI 风格 function calling 依赖它，默认开。 */

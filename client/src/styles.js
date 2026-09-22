@@ -366,6 +366,52 @@ export const S = {
   /** 警告（橙）：与状态徽章里的 starting/stopping 同色，表示「能跑但要注意」。 */
   warn: { border: `1px solid ${WARN}`, color: c('--dsw-alias-state-warn-label', '#9a6209'), background: `color-mix(in srgb, ${WARN} 8%, transparent)` },
   hint: { border: `1px solid ${BORDER_2}`, opacity: 0.85 },
+
+  // ── 「本次启动参数」面板（设置页最顶部）────────────────────────────────────
+  /**
+   * 代码块**横竖都可滚**，不换行。
+   *
+   * `whiteSpace: 'pre'` + `overflowX: 'auto'` 是刻意的：命令行的每一项都要能一眼看出
+   * 「哪一项配哪个值」，一旦自动换行，`--kvmem-budget` 和它的数字就会被拆到两行上去。
+   * `maxHeight` 则保证几十项参数也不会把下面的设置项挤出视口。
+   */
+  codeBlock: {
+    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+    fontSize: 11,
+    lineHeight: 1.7,
+    margin: 0,
+    padding: '10px 12px',
+    borderRadius: 8,
+    border: `1px solid ${BORDER_2}`,
+    background: SURFACE_RAISED,
+    color: LABEL,
+    overflow: 'auto',
+    maxHeight: 280,
+    whiteSpace: 'pre',
+    minWidth: 0,
+  },
+  /** 参数摘要：两列网格，窄屏也压得住（列宽 `minmax(0, 1fr)`，裸 `1fr` 会拒绝压缩）。 */
+  factGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: '10px 16px',
+    margin: '12px 0 0',
+    minWidth: 0,
+  },
+  factCell: { display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 },
+  factLabel: { fontSize: 11, opacity: 0.6, minWidth: 0 },
+  factValue: {
+    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+    fontSize: 11.5,
+    wordBreak: 'break-all',
+    minWidth: 0,
+  },
+  factNote: { fontSize: 10.5, opacity: 0.55, lineHeight: 1.45 },
+  /** 面板顶部的小标题（「本次启动参数」「参数摘要」这种）。 */
+  subTitle: { fontSize: 12.5, fontWeight: 500, margin: '0 0 8px' },
+  /** 面板右上角的工具行（复制按钮 + 时间）。 */
+  panelHead: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10, minWidth: 0 },
+  panelHeadSpacer: { flex: '1 1 auto', minWidth: 0 },
 }
 
 /**

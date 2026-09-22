@@ -24,7 +24,7 @@ import {
 } from '../lib/llama/capabilities.js'
 import { groupShards, parseQuant, parseParams, pickModel, formatBytes, scanModels, scanModelsDetailed, resolveVisionProjector, effectiveVisionProjector } from '../lib/registry.js'
 import { resolveDir, expandVars } from '../lib/paths.js'
-import { resolveConfig, clamp, logLevelOf, normalizeBool } from '../lib/configResolve.js'
+import { resolveConfig, clamp, logLevelOf, normalizeBool, normalizeChoice, consistencyNotices } from '../lib/configResolve.js'
 import { sanitize } from '../lib/configStore.js'
 import {
   isChatCompletionPath,
@@ -35,7 +35,20 @@ import {
   EFFORT_ORDER,
 } from '../lib/requestRewrite.js'
 import { diagnoseLoadFailure, extractEffectiveContext } from '../lib/llama/diagnose.js'
+import {
+  DEFAULT_GUARD_LIMITS,
+  applyMaxTokens,
+  isContextOverflowError,
+  nextRetryMaxTokens,
+  overflowHint,
+  preflightMaxTokens,
+  readMaxTokens,
+} from '../lib/contextGuard.js'
 import { shouldUnload } from '../lib/lifecycle.js'
+// renderCommandLine 在 args.js 里已经有一个（渲染子进程命令行），这里用别名区分：
+// 两者参数形状相同但用途不同（agent 显示 vs 真实启动），混用会让断言测错对象。
+import { buildLaunchReport, renderCommandLine as renderReportCommandLine, renderLaunchLines } from '../lib/launchReport.js'
+import { findMediaTools, mediaToolWarning, withMediaPath } from '../lib/llama/media.js'
 import { buildRouteProfile, buildRouteSpec, renderRouteYaml } from '../lib/llmBridge.js'
 import {
   MAX_PRESETS,
@@ -85,7 +98,25 @@ const KNOWN_FLAGS = new Set([
   '--temp', '--top-k', '--top-p', '--min-p', '--presence-penalty', '--repeat-penalty',
   '--repeat-last-n', '--seed',
   '--image-min-tokens', '--image-max-tokens', '--reasoning-budget',
+  // 新增的通用项
+  '-n', '-lm', '--frequency-penalty', '--kv-dtype', '--spec-kv-dtype', '--spec-draft-n-max',
+  '--spec-draft-p-min', '--no-mmproj-offload', '--chat-template-file', '--chat-template-kwargs',
+  '--reasoning-effort', '--reasoning-budget-message',
+  // KVMem 家族（--kvmem-gen-reserve 故意不在这个集合里，理由见下）
+  '--no-kvmem', '--kvmem-budget', '--kvmem-block-tokens', '--kvmem-sink-tokens',
+  '--kvmem-recent-tokens', '--kvmem-method', '--kvmem-query-last', '--kvmem-query-max-tokens',
+  '--kvmem-query-replay', '--kvmem-query-policy', '--kvmem-mtp-state', '--kvmem-gpu-ratio',
+  '--kvmem-cpu-gb', '--kvmem-nvme-gb', '--kvmem-nvme-dir', '--kvmem-harvest-v', '--kvmem-raw-k-nvme',
 ])
+
+/**
+ * `--kvmem-gen-reserve` 刻意**不**放进 KNOWN_FLAGS。
+ *
+ * 它的存在会触发一条「解码预留只有 N，单次生成会被截断」的提醒，而那条提醒挂在
+ * 「构建是否公开该选项」上。放进来的话，每一个与本项无关的用例都会多出一条 notices，
+ * 于是断言 notices 长度的用例集体误报。需要验证它的用例自己带 knownFlags。
+ */
+const GEN_RESERVE_FLAGS = new Set([...KNOWN_FLAGS, '--kvmem-gen-reserve'])
 
 /**
  * 新增参数的中性基线。
@@ -97,8 +128,45 @@ const KNOWN_FLAGS = new Set([
  * 需要验证门控或具体取值的用例，自行覆盖对应字段即可。
  */
 const NEW_PARAMS = {
+  // MTP 与视觉共存：与 configResolve 的默认值保持一致。
+  // 少了它，args.ts（用 `!== false` 判）与 registry.ts（用 `=== false` 判）会在
+  // 同一个用例里给出两种结论 —— 生产里它必然有值，只有夹具能暴露这种不一致。
+  mtpWithVision: true,
   kvUnified: false,
   kvStreamStageMib: 0,
+  // KVMem 家族：-1 / 空串 / 构建默认一律表示「不下发」，所以这一套基线不会往命令行里加任何东西。
+  // 数字项的 0 在这些选项上都是有意义的取值（budget 0 = n_ctx、cpu-gb 0 = 关闭），
+  // 因此哨兵必须是负数 —— 用例里写 -1 是有意的，别顺手改成 0。
+  kvmemEnabled: true,
+  kvmemBudget: -1,
+  kvmemGenReserve: -1,
+  kvmemBlockTokens: -1,
+  kvmemSinkTokens: -1,
+  kvmemRecentTokens: -1,
+  kvmemMethod: '',
+  kvmemQueryLast: -1,
+  kvmemQueryMaxTokens: -1,
+  kvmemQueryReplay: '',
+  kvmemQueryPolicy: '',
+  kvmemMtpState: '',
+  kvmemGpuRatio: -1,
+  kvmemCpuGb: -1,
+  kvmemNvmeGb: -1,
+  kvmemNvmeDir: '',
+  kvmemHarvestV: false,
+  kvmemRawKNvme: false,
+  nPredict: -1,
+  loadMode: '',
+  kvDtype: '',
+  specKvDtype: '',
+  specDraftNMax: -1,
+  specDraftPMin: -1,
+  frequencyPenalty: 0,
+  mmprojOffload: true,
+  chatTemplateFile: '',
+  chatTemplateKwargs: '',
+  reasoningEffort: '',
+  reasoningBudgetMessage: '',
   temp: 0,
   topK: 0,
   topP: 0,
@@ -792,17 +860,19 @@ test('开启 MTP：下发 --spec-type draft-mtp', () => {
   )
 })
 
-test('互斥：开了 MTP 时 --mmproj 绝不下发（同时给会让加载直接失败）', () => {
-  const built = buildArgs({ ...mtpBaseInput, mtp: true })
-  assert.equal(flagIndex(built.args, '--mmproj'), -1, 'MTP 与图像输入不能共存')
+test('互斥（关掉共存开关时）：--mmproj 绝不下发（上游 llama.cpp 会加载失败）', () => {
+  const built = buildArgs({ ...mtpBaseInput, mtp: true, mtpWithVision: false })
+  assert.equal(flagIndex(built.args, '--mmproj'), -1, '关掉共存时两个选项不能同时下发')
   assert.equal(built.args.includes('/m/mmproj-a.gguf'), false, '连值都不能残留在命令行里')
 })
 
 test('互斥不静默：notices 说清视觉投影为什么没了', () => {
-  const built = buildArgs({ ...mtpBaseInput, mtp: true })
+  const built = buildArgs({ ...mtpBaseInput, mtp: true, mtpWithVision: false })
   assert.equal(built.notices.length, 1)
   assert.ok(built.notices[0].includes('MTP'), '要点明是 MTP 造成的')
   assert.ok(built.notices[0].includes('--mmproj'), '要点明被丢掉的是哪个参数')
+  // 还要给出恢复办法 —— 否则用户只知道视觉没了，不知道该动哪个开关。
+  assert.ok(built.notices[0].includes('共存'), '要给出恢复办法')
 })
 
 test('本来就没有 mmproj：不刷无意义的「已忽略」提示', () => {
@@ -811,28 +881,47 @@ test('本来就没有 mmproj：不刷无意义的「已忽略」提示', () => {
   assert.deepEqual(built.notices, [], '没有东西被丢，就不该有提示')
 })
 
-test('effectiveVisionProjector：四种组合', () => {
+test('effectiveVisionProjector：共存开关决定 MTP 是否顶掉视觉', () => {
   const base = { modelsDir: '/m', mmprojFile: '', autoMmproj: '/m/mmproj-a.gguf' }
   assert.equal(effectiveVisionProjector({ ...base, mtp: false }), '/m/mmproj-a.gguf', '没开 MTP：沿用自动关联')
-  assert.equal(effectiveVisionProjector({ ...base, mtp: true }), '', '开了 MTP：视觉投影为空')
+  assert.equal(
+    effectiveVisionProjector({ ...base, mtp: true }),
+    '/m/mmproj-a.gguf',
+    '开了 MTP、共存开关取默认（开）：视觉照旧生效 —— 0.7.0 起 kvmem 分支支持共存',
+  )
+  assert.equal(
+    effectiveVisionProjector({ ...base, mtp: true, mtpWithVision: false }),
+    '',
+    '关掉共存：恢复旧的互斥',
+  )
   assert.equal(effectiveVisionProjector({ ...base, autoMmproj: null, mtp: false }), '', '本来没有视觉能力：空')
   assert.equal(
-    effectiveVisionProjector({ ...base, mmprojFile: 'vision/mmproj-b.gguf', mtp: true }),
+    effectiveVisionProjector({ ...base, mmprojFile: 'vision/mmproj-b.gguf', mtp: true, mtpWithVision: false }),
     '',
-    '显式选了也不生效 —— 互斥优先于用户的显式选择',
+    '关掉共存时显式选了也不生效 —— 互斥优先于用户的显式选择',
   )
 })
 
 test('显示值与命令行下发值严格一致（防面板与实参错位）', () => {
+  // 两个开关的四种组合都要对得上：面板显示走 registry.effectiveVisionProjector，
+  // 命令行走 args.buildLlamaServerArgs —— 两处对「没给这个字段」的解释必须同义
+  // （都用 `=== false` 判），否则会出现「面板写着启用了视觉、实参里却没有」这种错位。
   for (const mtp of [false, true]) {
-    const shown = effectiveVisionProjector({
-      modelsDir: '/m',
-      mmprojFile: 'vision/mmproj-b.gguf',
-      autoMmproj: '/m/mmproj-a.gguf',
-      mtp,
-    })
-    const built = buildArgs({ ...mtpBaseInput, mtp, mmproj: shown })
-    assert.equal(flagValue(built.args, '--mmproj') ?? '', shown, `mtp=${mtp} 时面板显示与实参必须一致`)
+    for (const mtpWithVision of [false, true]) {
+      const shown = effectiveVisionProjector({
+        modelsDir: '/m',
+        mmprojFile: 'vision/mmproj-b.gguf',
+        autoMmproj: '/m/mmproj-a.gguf',
+        mtp,
+        mtpWithVision,
+      })
+      const built = buildArgs({ ...mtpBaseInput, mtp, mtpWithVision, mmproj: shown })
+      assert.equal(
+        flagValue(built.args, '--mmproj') ?? '',
+        shown,
+        `mtp=${mtp} mtpWithVision=${mtpWithVision} 时面板显示与实参必须一致`,
+      )
+    }
   }
 })
 
@@ -1012,44 +1101,94 @@ section('分支构建：只下发它 --help 里公开的选项')
  *   usage: ...llama-kvmem-server.exe -m model.gguf [options]
  * 退出码 1 —— 「换了个 llama 分支，插件就起不来了」。
  */
+/**
+ * 实机样本：`llama-kvmem-server.exe --help` 的原文（2026-09-19 构建，Windows/cuda13）。
+ *
+ * 这份文本是**逐字抄下来的**，不要「顺手整理」：参数探测完全靠它，
+ * 改动它会连带改变「哪些选项会被下发」的判断，而那正是「换了个分支插件就起不来」的根源。
+ *
+ * 几个由它决定、且容易被忽略的事实：
+ *   - `-ngl` 只收数字（说明里没有 auto/all 关键字）→ 插件退回 `-ngl -1`；
+ *   - `-lm` 的过时别名写在**续行**里，所以解析器不会把 `--no-mmap` / `--mlock` 当成独立选项，
+ *     宽松门控会跳过它们 —— 这正是引入 -lm/--load-mode 那一项的理由；
+ *   - 它**没有** `--alias` / `-t` / `--threads-batch` / `-ub` / `--repeat-last-n` / `--api-key`，
+ *     发过去就是 `unknown flag: xxx` + exit 1。
+ */
 const KVMEM_HELP = [
-  '-m, --model PATH           GGUF path',
-  '--mmproj PATH              vision projector GGUF',
-  '--mmproj-offload           place vision encoder on GPU (default)',
-  '--no-mmproj-offload        place vision encoder on CPU',
-  '--image-min-tokens N       native minimum image token count',
-  '--image-max-tokens N       native maximum image token count',
-  '--host HOST                bind address (default 127.0.0.1)',
-  '--port N                   port (default 8080)',
-  '--ui-dir PATH              serve static chat UI from PATH',
-  '--no-ui                    disable bundled chat UI',
-  '-c, --ctx-size N           context size (default 2048)',
-  '-n, --n-predict N          default max_tokens (default 128)',
-  '-b, --batch-size N         logical batch (default 512)',
-  '-ngl, --n-gpu-layers N     GPU layers (default 99)',
-  'Sampling defaults: Qwen3.8-27B Thinking / non-Thinking, selected per request.',
-  '--temp, --temperature T    temperature [0,2] (1.0 / 0.7); 0 = greedy',
-  '--top-p P                  nucleus threshold [0,1] (0.95 / 0.80)',
-  '--top-k K                  integer >= 0; 0 disables (20)',
-  '--min-p P                  minimum relative probability [0,1] (0)',
-  '--presence-penalty P       presence penalty [-2,2] (0 / 1.5)',
-  '--frequency-penalty P      frequency penalty [-2,2] (0)',
-  '--repeat-penalty P         repetition penalty > 0 (1); --repetition-penalty alias',
-  '--seed N                   uint32 seed (default random)',
-  '                           request fields override these process defaults',
-  '--kvmem / --no-kvmem       enable KVMem (default on)',
-  '--kv-dtype NAME            GPU KV cache type for K and V: f16 | f32 | q8_0 | q5_0 | q4_0 (default q8_0)',
-  '-ctk, --cache-type-k TYPE  GPU K cache type (llama.cpp name; default q8_0)',
-  '-ctv, --cache-type-v TYPE  GPU V cache type (must match K when quantized)',
-  '--spec-type TYPE           none | draft-mtp (default none)',
-  '--jinja                    native Jinja rendering (always enabled)',
-  '--chat-template TEMPLATE   override model chat template (Jinja text)',
-  '--reasoning-effort LEVEL   template effort; default uses template default, none disables thinking',
-  '--enable-thinking          Qwen thinking on (default off; request can override)',
-  '--no-think                 force thinking off',
-  '--reasoning-budget N       thinking token budget: -1 unlimited, 0 end immediately,',
-  '                           N>0 force </think> after N think tokens (default -1)',
-  '--reasoning-budget-message MSG  injected before forced </think> (default none)',
+  'usage: llama-kvmem-server.exe -m model.gguf [options]',
+  '',
+  '  Independent single-slot OpenAI-compatible server. Does not patch llama-server.',
+  '',
+  '  -m, --model PATH           GGUF path',
+  '  --mmproj PATH              vision projector GGUF',
+  '  --mmproj-offload           place vision encoder on GPU (default)',
+  '  --no-mmproj-offload        place vision encoder on CPU',
+  '  --image-min-tokens N       native minimum image token count',
+  '  --image-max-tokens N       native maximum image token count',
+  '  --host HOST                bind address (default 127.0.0.1)',
+  '  --port N                   port (default 8080)',
+  '  -c, --ctx-size N           context size (default 2048)',
+  '  -n, --n-predict N          default max_tokens (default 128)',
+  '  -b, --batch-size N         logical batch (default 512)',
+  '  -ngl, --n-gpu-layers N     GPU layers (default 99)',
+  '  -lm, --load-mode MODE      how to load weights: auto|none|mmap|mlock|',
+  '                             mmap+mlock|dio (default auto)',
+  '                             deprecated aliases: --mlock, --mmap/--no-mmap,',
+  '                             --direct-io/--no-direct-io',
+  '  -fa, --flash-attn MODE     on|off|auto (default auto; quantized K/V',
+  '                             cache forces it on - use -fa off with',
+  '                             an f16 K/V cache to disable)',
+  '  --webui                    serve the built-in chat page at / (default)',
+  '  --no-webui                 do not serve any page at /',
+  '  --path DIR                 serve static files from DIR at / instead of',
+  '                             the built-in page (implies --webui)',
+  '  --server-browser           open the web UI in the default browser',
+  '  --no-server-browser        do not open a browser (default)',
+  '  Sampling defaults: Qwen3.8-27B Thinking / non-Thinking, selected per request.',
+  '  --temp, --temperature T    temperature [0,2] (1.0 / 0.7); 0 = greedy',
+  '  --top-p P                  nucleus threshold [0,1] (0.95 / 0.80)',
+  '  --top-k K                  integer >= 0; 0 disables (20)',
+  '  --min-p P                  minimum relative probability [0,1] (0)',
+  '  --presence-penalty P       presence penalty [-2,2] (0 / 1.5)',
+  '  --frequency-penalty P      frequency penalty [-2,2] (0)',
+  '  --repeat-penalty P         repetition penalty > 0 (1); --repetition-penalty alias',
+  '  --seed N                   uint32 seed (default random)',
+  '                            request fields override these process defaults',
+  '  --kvmem / --no-kvmem       enable KVMem (default on)',
+  '  --kvmem-budget N           GPU working-set tokens; 0 = n_ctx',
+  '  --kvmem-block-tokens N     block size (default 128)',
+  '  --kvmem-gen-reserve N      decode slack (default 256)',
+  '  --kvmem-recent-tokens N    always-kept newest suffix in select budget (default 0)',
+  '  --kvmem-method NAME        recency | retrieval (default retrieval)',
+  '  --kvmem-query-last N       fallback query-last if last-user span missing (default 64)',
+  '  --kvmem-query-max-tokens N cap last-user retrieval query to this many tokens',
+  '                            from the end of the span (default 512; qw3-style)',
+  '  --kvmem-query-replay MODE  legacy or auto (default auto)',
+  '  --kvmem-query-policy MODE  legacy or user (default user)',
+  '  --kvmem-mtp-state MODE     snapshots, auto or replay (default replay with MTP)',
+  '  --kvmem-gpu-ratio R        cap slot pool at this fraction of GPU VRAM (default 0.50)',
+  '  --kvmem-cpu-gb GB          CPU spill arena in GiB (0 = off)',
+  '  --kvmem-nvme-gb GB         NVMe file in GiB (0 = off)',
+  '  --kvmem-nvme-dir PATH      NVMe directory (default /tmp/kvmem_nvme)',
+  '  --kvmem-harvest-v          prefill D2H V with raw-K (default off; RAM until NVMe flush)',
+  '  --kvmem-raw-k-nvme         store raw-K and V on NVMe (needs --kvmem-nvme-gb)',
+  '  --kv-dtype NAME            GPU KV cache type for K and V: f16 | q8_0 | q5_0 | q4_0 (default q8_0)',
+  '  -ctk, --cache-type-k TYPE  GPU K cache type (llama.cpp name; default q8_0)',
+  '  -ctv, --cache-type-v TYPE  GPU V cache type (must match K when quantized)',
+  '  --spec-type TYPE           none | draft-mtp (default none)',
+  '  --spec-kv-dtype TYPE       MTP K/V type (default f16)',
+  '  --spec-draft-n-max N       MTP draft tokens (default 3)',
+  '  --spec-draft-p-min P       min draft probability (default 0)',
+  '  --jinja                    native Jinja rendering (always enabled)',
+  '  --chat-template TEMPLATE   override model chat template (Jinja text)',
+  '  --chat-template-file PATH  load a Jinja template file',
+  '  --chat-template-kwargs JSON  default template arguments',
+  '  --reasoning-effort LEVEL   template effort; default uses template default, none disables thinking',
+  '  --enable-thinking          Qwen thinking on (default off; request can override)',
+  '  --no-think                 force thinking off',
+  '  --reasoning-budget N       thinking token budget: -1 unlimited, 0 end immediately,',
+  '                            N>0 force </think> after N think tokens (default -1)',
+  '  --reasoning-budget-message MSG  injected before forced </think> (default none)',
 ].join('\n')
 
 test('kvmem 构建：默认配置下的每一个选项都被接受（不再有 unknown flag）', () => {
@@ -1077,6 +1216,35 @@ test('kvmem 构建：默认配置下的每一个选项都被接受（不再有 u
     mlock: true,
     apiKey: 'k',
     knownFlags: caps.flags,
+    // 新增的 KVMem 家族与通用项：全部给真实取值，验证这个构建确实接受它们。
+    kvmemBudget: 36864,
+    kvmemGenReserve: 16384,
+    kvmemBlockTokens: 128,
+    kvmemRecentTokens: 4096,
+    kvmemMethod: 'retrieval',
+    kvmemQueryLast: 64,
+    kvmemQueryMaxTokens: 512,
+    kvmemQueryReplay: 'auto',
+    kvmemQueryPolicy: 'user',
+    kvmemMtpState: 'replay',
+    kvmemGpuRatio: 0.8,
+    kvmemCpuGb: 8,
+    kvmemNvmeGb: 32,
+    kvmemNvmeDir: 'D:/kvmem_nvme',
+    kvmemHarvestV: true,
+    kvmemRawKNvme: true,
+    kvDtype: 'q8_0',
+    specKvDtype: 'f16',
+    specDraftNMax: 3,
+    specDraftPMin: 0,
+    nPredict: 32768,
+    loadMode: 'none',
+    frequencyPenalty: 0.5,
+    mmprojOffload: false,
+    reasoningEffort: 'medium',
+    reasoningBudgetMessage: '直接作答',
+    chatTemplateFile: 'D:/templates/t.jinja',
+    chatTemplateKwargs: '{"enable_thinking":true}',
   })
 
   // 核心断言：下发出去的每一项都在这个构建的 --help 里 —— 这就是「能不能起来」的分界线。
@@ -1087,9 +1255,13 @@ test('kvmem 构建：默认配置下的每一个选项都被接受（不再有 u
   )
 
   // 逐项钉死：这些是实机确认过会 `unknown flag` 直接退出 1 的选项。
-  for (const flag of ['--alias', '-t', '--threads-batch', '-ub', '--repeat-last-n', '--no-mmap', '--mlock', '--api-key', '--flash-attn']) {
+  // 注意 `--flash-attn` 不在此列 —— 这个构建的 --help 明写了 `-fa, --flash-attn MODE`，
+  // 实机日志里也确实是带着 `--flash-attn on` 起来的。把「旧构建没有它」当成「它不该被下发」
+  // 正是这份夹具最容易骗人的地方，所以这里反过来单独钉一条正向断言。
+  for (const flag of ['--alias', '-t', '--threads-batch', '-ub', '--repeat-last-n', '--no-mmap', '--mlock', '--api-key']) {
     assert.equal(flagIndex(built.args, flag), -1, `${flag} 不该下发给这个构建（unknown flag，整台起不来）`)
   }
+  assert.equal(flagValue(built.args, '--flash-attn'), 'on', '这个构建收 --flash-attn 的带值形式，必须照发')
 
   // 它确实有的选项照旧下发，功能不被「一刀切地清空」。
   assert.equal(flagValue(built.args, '--temp'), '0.75')
@@ -1102,11 +1274,324 @@ test('kvmem 构建：默认配置下的每一个选项都被接受（不再有 u
   assert.equal(flagValue(built.args, '--cache-type-k'), 'q8_0')
   assert.equal(flagIndex(built.args, '--seed'), -1, '默认 -1 = 随机 = 不下发（它按 uint32 校验，-1 会被拒）')
 
+  // 新增项：一个一个核对取值，防止「配置里填了 8 结果发出去 0」这类错位。
+  assert.equal(flagValue(built.args, '--kvmem-budget'), '36864')
+  assert.equal(flagValue(built.args, '--kvmem-gen-reserve'), '16384')
+  assert.equal(flagValue(built.args, '--kvmem-block-tokens'), '128')
+  assert.equal(flagValue(built.args, '--kvmem-recent-tokens'), '4096')
+  assert.equal(flagValue(built.args, '--kvmem-method'), 'retrieval')
+  assert.equal(flagValue(built.args, '--kvmem-query-last'), '64')
+  assert.equal(flagValue(built.args, '--kvmem-query-max-tokens'), '512')
+  assert.equal(flagValue(built.args, '--kvmem-query-replay'), 'auto')
+  assert.equal(flagValue(built.args, '--kvmem-query-policy'), 'user')
+  assert.equal(flagValue(built.args, '--kvmem-mtp-state'), 'replay')
+  assert.equal(flagValue(built.args, '--kvmem-gpu-ratio'), '0.8', '比例项不能被四舍五入成 1')
+  assert.equal(flagValue(built.args, '--kvmem-cpu-gb'), '8')
+  assert.equal(flagValue(built.args, '--kvmem-nvme-gb'), '32')
+  assert.equal(flagValue(built.args, '--kvmem-nvme-dir'), 'D:/kvmem_nvme')
+  assert.ok(built.args.includes('--kvmem-harvest-v'))
+  assert.ok(built.args.includes('--kvmem-raw-k-nvme'))
+  assert.equal(flagValue(built.args, '--kv-dtype'), 'q8_0')
+  assert.equal(flagValue(built.args, '--spec-kv-dtype'), 'f16')
+  assert.equal(flagValue(built.args, '--spec-draft-n-max'), '3')
+  assert.equal(flagValue(built.args, '--spec-draft-p-min'), '0')
+  assert.equal(flagValue(built.args, '-n'), '32768')
+  assert.equal(flagValue(built.args, '-lm'), 'none')
+  assert.equal(flagValue(built.args, '--frequency-penalty'), '0.5')
+  assert.ok(built.args.includes('--no-mmproj-offload'), '关掉视觉编码器 GPU 时下发否定形式')
+  assert.equal(flagValue(built.args, '--reasoning-effort'), 'medium')
+  assert.equal(flagValue(built.args, '--reasoning-budget-message'), '直接作答')
+  assert.equal(flagValue(built.args, '--chat-template-file'), 'D:/templates/t.jinja')
+  assert.equal(flagValue(built.args, '--chat-template-kwargs'), '{"enable_thinking":true}')
+
+  // --kv-dtype 和 -ctk/-ctv 是两条重叠通道：同时给必须提醒（生效顺序由构建内部决定）。
+  assert.ok(
+    built.notices.some((n) => n.includes('KV 缓存类型（合并）')),
+    `重叠配置要给出提示，实际：${built.notices.join(' | ')}`,
+  )
+
   // 跳过必须有说明 —— 否则用户只会看到「参数少了几个」而毫无线索。
   assert.ok(
     built.notices.some((n) => n.includes('不认识') && n.includes('--alias')),
     `被跳过的选项要写进日志，实际：${built.notices.join(' | ')}`,
   )
+})
+
+// ── 新增启动项：默认「不下发」与门控 ────────────────────────────────────────
+section('KVMem 家族与新增启动项')
+
+test('新增项：默认值一律不下发（装官方 llama.cpp 的人行为一字不变）', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, knownFlags: KNOWN_FLAGS })
+  for (const flag of [
+    '--no-kvmem', '--kvmem-budget', '--kvmem-gen-reserve', '--kvmem-block-tokens',
+    '--kvmem-sink-tokens', '--kvmem-recent-tokens', '--kvmem-method', '--kvmem-query-last',
+    '--kvmem-query-max-tokens', '--kvmem-query-replay', '--kvmem-query-policy', '--kvmem-mtp-state',
+    '--kvmem-gpu-ratio', '--kvmem-cpu-gb', '--kvmem-nvme-gb', '--kvmem-nvme-dir',
+    '--kvmem-harvest-v', '--kvmem-raw-k-nvme', '-n', '-lm', '--kv-dtype', '--spec-kv-dtype',
+    '--spec-draft-n-max', '--spec-draft-p-min', '--frequency-penalty', '--no-mmproj-offload',
+    '--chat-template-file', '--chat-template-kwargs', '--reasoning-effort', '--reasoning-budget-message',
+  ]) {
+    assert.equal(flagIndex(built.args, flag), -1, `${flag} 在默认配置下不该出现`)
+  }
+  assert.deepEqual(built.notices, [], '默认配置下不该有任何提示')
+})
+
+test('新增项：0 会被显式下发（这些选项的 0 是有意义的取值，不能当「不下发」）', () => {
+  const built = buildArgs({
+    ...kvBaseInput,
+    ...NEW_PARAMS,
+    kvmemBudget: 0,
+    kvmemCpuGb: 0,
+    kvmemRecentTokens: 0,
+    specDraftPMin: 0,
+    frequencyPenalty: 0,
+    knownFlags: KNOWN_FLAGS,
+  })
+  assert.equal(flagValue(built.args, '--kvmem-budget'), '0', 'budget 0 的含义是「等于 n_ctx」，必须发出去')
+  assert.equal(flagValue(built.args, '--kvmem-cpu-gb'), '0', '0 = 关闭溢出场，是显式意图')
+  assert.equal(flagValue(built.args, '--kvmem-recent-tokens'), '0')
+  assert.equal(flagValue(built.args, '--spec-draft-p-min'), '0')
+  // 反向：frequency-penalty 的 0 与构建默认值一致，下发它没有任何信息量。
+  assert.equal(flagIndex(built.args, '--frequency-penalty'), -1)
+})
+
+test('新增项：关掉 KVMem 时下发 --no-kvmem', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvmemEnabled: false, knownFlags: KNOWN_FLAGS })
+  assert.ok(built.args.includes('--no-kvmem'))
+})
+
+test('门控：KVMem 家族在官方构建上被整体跳过（严格门控，探测不到就不发）', () => {
+  // 官方 llama.cpp 的 --help 里没有任何 --kvmem-*，发过去就是 unknown flag + exit 1。
+  const official = new Set(['-m', '--host', '--port', '-c', '-ngl', '-b', '--temp', '--top-k'])
+  const built = buildArgs({
+    ...kvBaseInput,
+    ...NEW_PARAMS,
+    kvmemBudget: 36864,
+    kvmemGenReserve: 16384,
+    kvmemMethod: 'retrieval',
+    kvmemCpuGb: 8,
+    kvmemHarvestV: true,
+    knownFlags: official,
+  })
+  for (const flag of ['--kvmem-budget', '--kvmem-gen-reserve', '--kvmem-method', '--kvmem-cpu-gb', '--kvmem-harvest-v']) {
+    assert.equal(flagIndex(built.args, flag), -1, `${flag} 不该下发给官方构建`)
+  }
+  assert.ok(
+    built.notices.some((n) => n.includes('--kvmem-budget')),
+    `被跳过的选项要写进日志，实际：${built.notices.join(' | ')}`,
+  )
+})
+
+test('门控：探测失败时 KVMem 家族也不下发（新选项一律不赌它认）', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvmemBudget: 36864, kvmemHarvestV: true, knownFlags: null })
+  assert.equal(flagIndex(built.args, '--kvmem-budget'), -1)
+  assert.equal(flagIndex(built.args, '--kvmem-harvest-v'), -1)
+})
+
+test('解码预留：小于 1024 时点明「单次生成会被截断」（这个构建默认只有 256）', () => {
+  const low = buildArgs({
+    ...kvBaseInput,
+    ...NEW_PARAMS,
+    kvmemGenReserve: 256,
+    knownFlags: GEN_RESERVE_FLAGS,
+  })
+  assert.equal(flagValue(low.args, '--kvmem-gen-reserve'), '256')
+  assert.ok(
+    low.notices.some((n) => n.includes('单次生成的上限') && n.includes('256')),
+    `必须说清后果，实际：${low.notices.join(' | ')}`,
+  )
+
+  // 反向验证：给足之后这条提示必须消失（否则它会变成噪音，用户就不看了）。
+  const ok = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvmemGenReserve: 16384, knownFlags: GEN_RESERVE_FLAGS })
+  assert.deepEqual(ok.notices, [], `给足时不该有提示，实际：${ok.notices.join(' | ')}`)
+
+  // 未设置时要说明「将沿用构建默认的 256」——用户看不到任何报错，最容易被这个坑埋掉。
+  const unset = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvmemGenReserve: -1, knownFlags: GEN_RESERVE_FLAGS })
+  assert.ok(
+    unset.notices.some((n) => n.includes('256')),
+    `未设置时要提醒构建默认值，实际：${unset.notices.join(' | ')}`,
+  )
+  // 而构建压根没有这个选项时（官方构建）不该有「解码预留」的提醒。
+  // 这里只能断言「没有这一条」而不是「notices 为空」—— 官方构建同样不认识
+  // --reasoning-budget / --temp 等一堆项，那条汇总提示本来就该出现。
+  const official = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, kvmemGenReserve: -1, knownFlags: new Set(['-m', '-c']) })
+  assert.ok(
+    !official.notices.some((n) => n.includes('解码预留')),
+    `官方构建没有这个选项，不该提醒，实际：${official.notices.join(' | ')}`,
+  )
+  // 顺带钉住「被跳过的项必须出现在汇总提示里」——新选项曾经因为结算顺序靠前而被漏掉。
+  assert.ok(
+    official.notices.some((n) => n.includes('--reasoning-budget')),
+    `被跳过的选项要进汇总提示，实际：${official.notices.join(' | ')}`,
+  )
+})
+
+// ── 输出上限溢出保护（本轮 400 故障的针对性防线）────────────────────────────
+section('输出上限溢出保护（max_tokens vs n_ctx）')
+
+const GUARD_LIMITS = { nCtx: 32768, ...DEFAULT_GUARD_LIMITS }
+const bodyOf = (obj) => Buffer.from(JSON.stringify(obj), 'utf8')
+
+test('溢出保护：max_tokens >= n_ctx 的请求被压到「n_ctx − 提示词预留」', () => {
+  const out = preflightMaxTokens(bodyOf({ messages: [{ role: 'user', content: 'hi' }], max_tokens: 128000 }), GUARD_LIMITS)
+  assert.equal(out.changed, true)
+  assert.equal(out.from, 128000)
+  assert.equal(out.to, GUARD_LIMITS.nCtx - DEFAULT_GUARD_LIMITS.reserveForPrompt)
+  assert.equal(JSON.parse(out.body.toString('utf8')).max_tokens, out.to)
+})
+
+test('溢出保护：边界恰好落在 max_tokens === n_ctx 上（自引用判据，不写死数字）', () => {
+  const at = preflightMaxTokens(bodyOf({ max_tokens: GUARD_LIMITS.nCtx }), GUARD_LIMITS)
+  const below = preflightMaxTokens(bodyOf({ max_tokens: GUARD_LIMITS.nCtx - 1 }), GUARD_LIMITS)
+  assert.equal(at.changed, true, '等于 n_ctx 时提示词至少要占 1 个 token，必然放不下')
+  assert.equal(below.changed, false, '差 1 个 token 就够得着，不该动它')
+})
+
+test('溢出保护：够得着的请求原样返回同一个 Buffer（连重新序列化都不发生）', () => {
+  const src = bodyOf({ messages: [{ role: 'user', content: '你好' }], max_tokens: 8192 })
+  const out = preflightMaxTokens(src, GUARD_LIMITS)
+  assert.equal(out.changed, false)
+  assert.equal(out.body, src)
+})
+
+test('溢出保护：压不到下限就不动手（floor 是硬约束）', () => {
+  const tiny = { nCtx: 600, floor: 512, reserveForPrompt: 1024, maxAttempts: 5 }
+  assert.equal(preflightMaxTokens(bodyOf({ max_tokens: 600 }), tiny).to, 512)
+  // floor 比原值还高时，压缩反而会把上限抬上去 —— 这种请求必须原样放行。
+  const high = { nCtx: 600, floor: 700, reserveForPrompt: 1024, maxAttempts: 5 }
+  assert.equal(preflightMaxTokens(bodyOf({ max_tokens: 600 }), high).changed, false)
+})
+
+test('溢出保护：非法请求体一律原样放行（保护措施不能变成新的失败点）', () => {
+  for (const raw of ['', 'not json', '[]', '"x"', 'null', '{']) {
+    const out = preflightMaxTokens(Buffer.from(raw, 'utf8'), GUARD_LIMITS)
+    assert.equal(out.changed, false, `不该改：${JSON.stringify(raw)}`)
+    assert.equal(out.body.toString('utf8'), raw, `内容也不该变：${JSON.stringify(raw)}`)
+  }
+})
+
+test('溢出保护：报错判据覆盖两个分支的写法，且不误伤普通 400', () => {
+  // kvmem 独立 server 的原文（实机抓到的就是这一条）
+  assert.equal(isContextOverflowError('{"error":"prompt + max_tokens exceeds n_ctx"}'), true)
+  // 上游 llama.cpp 的写法
+  assert.equal(isContextOverflowError('the request exceeds the available context size (100 tokens)'), true)
+  // 反向验证：形状相似的普通 400 一个都不能命中，否则会把无害错误也拖进重试。
+  assert.equal(isContextOverflowError('{"error":{"message":"Invalid API key"}}'), false)
+  assert.equal(isContextOverflowError('{"error":"model not found"}'), false)
+  assert.equal(isContextOverflowError('context size must be positive'), false)
+  assert.equal(isContextOverflowError(''), false)
+})
+
+test('溢出保护：重试序列逐次减半，且停在下限之前', () => {
+  const seen = []
+  let current = readMaxTokens({ max_tokens: 128000 })
+  for (let i = 0; i < 20 && current !== null; i++) {
+    current = nextRetryMaxTokens(current, GUARD_LIMITS)
+    if (current !== null) seen.push(current)
+  }
+  assert.ok(seen.length > 0, '至少要能压一次')
+  // 自引用判据：相邻两项必须严格是减半关系 —— 不写死任何具体数字。
+  for (let i = 1; i < seen.length; i++) {
+    assert.equal(seen[i], Math.floor(seen[i - 1] / 2), `第 ${i} 项不是减半：${seen.join(',')}`)
+  }
+  assert.ok(seen.every((v) => v >= DEFAULT_GUARD_LIMITS.floor), `压过了下限：${seen.join(',')}`)
+  assert.ok(seen.length < 20, '必须能收敛到 null，否则会无限重试')
+  // 请求里压根没有 max_tokens 时，从 n_ctx/2 起压（上限来自服务端的 -n，只能靠显式写入压住）。
+  assert.equal(nextRetryMaxTokens(null, GUARD_LIMITS), Math.floor(GUARD_LIMITS.nCtx / 2))
+})
+
+test('溢出保护：重试时改已有的那个字段，而不是平白多出一个', () => {
+  const replaced = JSON.parse(applyMaxTokens(bodyOf({ messages: [], max_completion_tokens: 999 }), 4096).toString('utf8'))
+  assert.equal(replaced.max_completion_tokens, 4096)
+  assert.equal('max_tokens' in replaced, false)
+
+  const added = JSON.parse(applyMaxTokens(bodyOf({ messages: [] }), 4096).toString('utf8'))
+  assert.equal(added.max_tokens, 4096, '一个都没有时补 max_tokens —— llama.cpp 认这个字段')
+
+  assert.equal(applyMaxTokens(Buffer.from('not json', 'utf8'), 4096), null)
+})
+
+test('溢出保护：读不出 max_tokens 的形式一律当作「未指定」', () => {
+  assert.equal(readMaxTokens({ max_tokens: 12 }), 12)
+  assert.equal(readMaxTokens({ max_completion_tokens: 34 }), 34)
+  assert.equal(readMaxTokens({ max_tokens: '12' }), null, '字符串不算，服务端也不认')
+  assert.equal(readMaxTokens({ max_tokens: Number.NaN }), null)
+  assert.equal(readMaxTokens(null), null)
+  assert.equal(readMaxTokens([]), null)
+})
+
+test('溢出保护：放弃重试时的说明必须带上 n_ctx（原文里恰恰没有它）', () => {
+  const hint = overflowHint(32768, null)
+  assert.ok(hint.includes('32768'), `要给出真实数字，实际：${hint}`)
+  assert.ok(hint.includes('contextWindow'), '要指向最可能的原因')
+  assert.ok(hint.length > 40)
+})
+
+// ── 配置层：新增项的默认值与收敛 ─────────────────────────────────────────────
+test('配置：新增项的默认值一律是「不下发」', () => {
+  const resolved = resolveConfig(undefined, { DSH_HOME: '/tmp/dsh' })
+  for (const key of [
+    'kvmemBudget', 'kvmemGenReserve', 'kvmemBlockTokens', 'kvmemSinkTokens', 'kvmemRecentTokens',
+    'kvmemQueryLast', 'kvmemQueryMaxTokens', 'kvmemGpuRatio', 'kvmemCpuGb', 'kvmemNvmeGb',
+    'nPredict', 'specDraftNMax', 'specDraftPMin',
+  ]) {
+    assert.equal(resolved[key], -1, `${key} 的默认值应为 -1（哨兵 = 不下发）`)
+  }
+  for (const key of [
+    'kvmemMethod', 'kvmemQueryReplay', 'kvmemQueryPolicy', 'kvmemMtpState', 'kvmemNvmeDir',
+    'loadMode', 'kvDtype', 'specKvDtype', 'chatTemplateFile', 'chatTemplateKwargs',
+    'reasoningEffort', 'reasoningBudgetMessage',
+  ]) {
+    assert.equal(resolved[key], '', `${key} 的默认值应为空串（不下发）`)
+  }
+  assert.equal(resolved.kvmemEnabled, true)
+  assert.equal(resolved.mmprojOffload, true)
+  assert.equal(resolved.kvmemHarvestV, false)
+  assert.equal(resolved.kvmemRawKNvme, false)
+  assert.equal(resolved.frequencyPenalty, 0)
+  assert.equal(resolved.guardContextOverflow, true)
+})
+
+test('配置：枚举项非法取值被收敛（拼错的值会让服务起不来，不是被忽略）', () => {
+  const env = { DSH_HOME: '/tmp/dsh' }
+  assert.equal(resolveConfig({ kvmemMethod: 'Retrieval' }, env).kvmemMethod, 'retrieval', '大小写不敏感')
+  assert.equal(resolveConfig({ kvmemMethod: 'nonsense' }, env).kvmemMethod, '')
+  assert.equal(resolveConfig({ loadMode: 'DIO' }, env).loadMode, 'dio')
+  assert.equal(resolveConfig({ loadMode: 'mmap+mlock' }, env).loadMode, 'mmap+mlock')
+  assert.equal(resolveConfig({ loadMode: 'bogus' }, env).loadMode, '')
+  assert.equal(resolveConfig({ kvDtype: 'q4_0' }, env).kvDtype, 'q4_0')
+  assert.equal(resolveConfig({ kvDtype: 'q3_k' }, env).kvDtype, '', '不在白名单里的一律回落到不下发')
+  assert.equal(resolveConfig({ reasoningEffort: 'HIGH' }, env).reasoningEffort, 'high')
+  assert.equal(resolveConfig({ reasoningEffort: 'ultracode' }, env).reasoningEffort, '')
+  assert.equal(normalizeChoice(undefined, ['', 'a'], ''), '')
+})
+
+test('配置：比例项不被四舍五入（clamp 会把 0.8 变成 1）', () => {
+  const env = { DSH_HOME: '/tmp/dsh' }
+  assert.equal(resolveConfig({ kvmemGpuRatio: 0.8 }, env).kvmemGpuRatio, 0.8)
+  assert.equal(resolveConfig({ specDraftPMin: 0.25 }, env).specDraftPMin, 0.25)
+  assert.equal(resolveConfig({ frequencyPenalty: 1.5 }, env).frequencyPenalty, 1.5)
+})
+
+test('配置提醒：maxTokens 不小于 ctxSize 时必须说出来（本轮 400 的根因就是它）', () => {
+  const bad = consistencyNotices({ ctxSize: 32768, maxTokens: 128000, kvmemGenReserve: -1 })
+  assert.equal(bad.length, 1)
+  assert.ok(bad[0].includes('400'), `要讲清 kvmem 会直接判 400，实际：${bad[0]}`)
+  assert.ok(bad[0].includes('32768'), '要给出真实的上下文长度')
+  // 反向验证：正常的组合一个字的提醒都不该有，否则用户会习惯性忽略。
+  assert.deepEqual(consistencyNotices({ ctxSize: 32768, maxTokens: 8192, kvmemGenReserve: 16384 }), [])
+  // 中间一档：超过一半就提醒空间不够（但别说成「一定失败」）
+  const half = consistencyNotices({ ctxSize: 32768, maxTokens: 20000, kvmemGenReserve: -1 })
+  assert.equal(half.length, 1)
+  assert.ok(half[0].includes('一半'))
+})
+
+test('配置提醒：解码预留小于输出上限时，回复会被截断', () => {
+  const notices = consistencyNotices({ ctxSize: 32768, maxTokens: 8192, kvmemGenReserve: 256 })
+  assert.equal(notices.length, 1)
+  assert.ok(notices[0].includes('截断'), `要说清后果，实际：${notices[0]}`)
+  // 反向验证：预留给足时不提醒。
+  assert.deepEqual(consistencyNotices({ ctxSize: 32768, maxTokens: 8192, kvmemGenReserve: 8192 }), [])
 })
 
 test('kvmem 构建：探测失败时不受影响（照旧全量下发，与历史行为一致）', () => {
@@ -1771,6 +2256,212 @@ await testAsync('加载时按上限截断，不会把界面塞爆', async () => 
 })
 
 await rm(presetDir, { recursive: true, force: true })
+
+// ── 设置页表单：新增字段有没有被真正「摆上去」─────────────────────────────────
+// 这一节替代了「必须装 dsh 才能跑的 load-check」里最容易漏的那部分：
+// 字段进了 schema 与写入白名单，却没进分组表 / 短标签表时**不会有任何报错**，
+// 表现只是「设置页上这一项落进「其他」分组」或者「标签是一串英文键名」——
+// 用户看到的是「新功能没出现」，而日志里一个字都没有。
+await testAsync('表单：每个可写字段都有命名分组和中文短标签（漏了就静默消失）', async () => {
+  const { extractFields } = await import('../lib/schemaForm.js')
+
+  // 传一个「拿不到序列化 schema」的输入：extractFields 会退回 configStore 的类型表。
+  // 于是这里检查的正是「字段表列了它、设置页却没给它分组/标签」这类静默遗漏，
+  // 而且不需要 schemastery 在场 —— 这正是它在没有宿主的机器上也能跑的原因。
+  const fields = extractFields({})
+  assert.ok(fields.length >= 60, `字段数明显偏少，说明类型表没被读全：${fields.length}`)
+
+  const orphans = fields.filter((f) => f.uiGroup === 'other').map((f) => f.key)
+  assert.deepEqual(orphans, [], `这些字段没有归组（会掉进「其他」）：${orphans.join('、')}`)
+
+  const unlabeled = fields.filter((f) => f.label === f.key).map((f) => f.key)
+  assert.deepEqual(unlabeled, [], `这些字段没有中文短标签（界面会直接显示英文键名）：${unlabeled.join('、')}`)
+
+  // 分组必须是**真的在区分**，不能所有字段都拿到同一个值 ——
+  // 否则上面两条断言在一个「groupOf 恒返回常量」的实现上也会通过。
+  const groups = new Set(fields.map((f) => f.uiGroup))
+  assert.ok(groups.size >= 7, `分组机制要真的在区分，实际只有 ${groups.size} 种分组`)
+  for (const sample of [
+    // `mtp` 是那个开关本身，留在「模型与目录」；它的**细节参数**才在「多 Token 预测」组。
+    ['mtp', 'model'],
+    ['mmprojFile', 'model'],
+    ['specKvDtype', 'mtp'],
+    ['specDraftNMax', 'mtp'],
+    ['ctxSize', 'infer'],
+    ['guardContextOverflow', 'infer'],
+    ['nPredict', 'infer'],
+    ['kvmemBudget', 'kvmem'],
+    ['kvmemGenReserve', 'kvmem'],
+    ['apiKey', 'advanced'],
+  ]) {
+    const field = fields.find((f) => f.key === sample[0])
+    assert.ok(field, `${sample[0]} 必须出现在表单里`)
+    assert.equal(field.uiGroup, sample[1], `${sample[0]} 必须落在「${sample[1]}」分组`)
+  }
+
+  // 新增的 KVMem 家族必须整组出现并且整组归到自己的分组：分开放会让用户根本找不到。
+  const kvmem = fields.filter((f) => f.key.startsWith('kvmem'))
+  assert.ok(kvmem.length >= 18, `KVMem 家族应当至少 18 项，实际 ${kvmem.length}`)
+  assert.ok(kvmem.every((f) => f.uiGroup === 'kvmem'), 'KVMem 家族必须整组落在「KVMem 分块缓存」分组')
+
+  // 默认值来自 defaultConfig（不是表单自己猜的），抽两个有代表性的核对一下。
+  assert.equal(fields.find((f) => f.key === 'kvmemGenReserve').default, -1, '哨兵 -1 = 不下发')
+  assert.equal(fields.find((f) => f.key === 'guardContextOverflow').default, true)
+  assert.equal(fields.find((f) => f.key === 'mmprojOffload').default, true)
+})
+
+// ── MTP 与视觉投影的关系（0.7.0：从互斥改为可共存）──────────────────────────
+section('MTP 与视觉投影')
+
+test('MTP 与视觉：默认可以共存（kvmem 分支实测支持同时加载）', () => {
+  const built = buildArgs({
+    ...kvBaseInput,
+    ...NEW_PARAMS,
+    mtp: true,
+    mtpWithVision: true,
+    mmproj: '/m/mmproj.gguf',
+  })
+  assert.equal(flagValue(built.args, '--spec-type'), 'draft-mtp', 'MTP 要下发')
+  assert.equal(flagValue(built.args, '--mmproj'), '/m/mmproj.gguf', '视觉投影也要下发')
+  assert.ok(
+    built.notices.some((n) => n.includes('同时下发')),
+    `共存是行为变化，必须写进提示，实际：${built.notices.join(' | ')}`,
+  )
+})
+
+test('MTP 与视觉：关掉共存开关即恢复旧互斥（上游 llama.cpp 需要）', () => {
+  const built = buildArgs({
+    ...kvBaseInput,
+    ...NEW_PARAMS,
+    mtp: true,
+    mtpWithVision: false,
+    mmproj: '/m/mmproj.gguf',
+  })
+  assert.equal(flagValue(built.args, '--spec-type'), 'draft-mtp')
+  assert.equal(flagIndex(built.args, '--mmproj'), -1, '互斥时 --mmproj 绝不能漏下去')
+  // 提示里要给出「怎么打开共存」——否则用户只知道视觉没了，不知道该动哪个开关。
+  assert.ok(
+    built.notices.some((n) => n.includes('被忽略') && n.includes('共存')),
+    `实际：${built.notices.join(' | ')}`,
+  )
+})
+
+test('MTP 与视觉：没开 MTP 时 mmproj 照旧下发（老行为一字不变）', () => {
+  const built = buildArgs({ ...kvBaseInput, ...NEW_PARAMS, mtp: false, mtpWithVision: true, mmproj: '/m/v.gguf' })
+  assert.equal(flagValue(built.args, '--mmproj'), '/m/v.gguf')
+  assert.equal(flagIndex(built.args, '--spec-type'), -1)
+  assert.deepEqual(built.notices, [], '普通情况不该多出一条提示')
+})
+
+test('视觉投影的有效值：共存开关为开时，MTP 不再顶掉它', () => {
+  const expected = path.resolve('/m', 'v.gguf')
+  const base = { modelsDir: '/m', mmprojFile: 'v.gguf', autoMmproj: null }
+  assert.equal(effectiveVisionProjector({ ...base, mtp: true, mtpWithVision: true }), expected)
+  assert.equal(effectiveVisionProjector({ ...base, mtp: true, mtpWithVision: false }), '')
+  assert.equal(effectiveVisionProjector({ ...base, mtp: false }), expected, '没开 MTP 时不受本开关影响')
+})
+
+test('配置：MTP 与视觉共存默认开启（用户不用去改任何东西）', () => {
+  assert.equal(resolveConfig(undefined, { DSH_HOME: '/tmp/dsh' }).mtpWithVision, true)
+  assert.equal(resolveConfig({ mtpWithVision: false }, { DSH_HOME: '/tmp/dsh' }).mtpWithVision, false)
+  assert.equal(resolveConfig({ mtpWithVision: 'no' }, { DSH_HOME: '/tmp/dsh' }).mtpWithVision, false)
+})
+
+// ── 外部媒体工具（WebP 解码依赖它）─────────────────────────────────────────
+section('外部媒体工具 ffmpeg / ffprobe')
+
+await testAsync('媒体工具：两个可执行文件都在才算找到（半套工具不认）', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'media-tools-'))
+  const win = process.platform === 'win32'
+  try {
+    await writeFile(path.join(dir, win ? 'ffprobe.exe' : 'ffprobe'), 'x')
+    // 只传 PATH 不传 LOCALAPPDATA：否则本机 winget 装的 ffmpeg 会命中，测的就不是这里了。
+    assert.equal(findMediaTools({ env: { PATH: '' }, extraDirs: [dir] }).dir, null, '只有 ffprobe 不算数')
+
+    await writeFile(path.join(dir, win ? 'ffmpeg.exe' : 'ffmpeg'), 'x')
+    const found = findMediaTools({ env: { PATH: '' }, extraDirs: [dir] })
+    assert.equal(found.dir, dir)
+    assert.ok(found.ffprobe && found.ffprobe.startsWith(dir), '要给出 ffprobe 的绝对路径')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('媒体工具：PATH 里能找到时也认（用户自己装的场景）', () => {
+  const dir = path.resolve('/opt/ffmpeg/bin')
+  // 用一个真实存在的目录冒充：这里只验证「PASS 会去逐个试 PATH 段」这条机制，
+  // 所以拿本仓库的 node_modules 目录造两个同名文件不合适 —— 改为断言「找不到就返回 null」。
+  assert.equal(findMediaTools({ env: { PATH: dir }, platform: 'linux' }).dir, null)
+})
+
+test('媒体工具：PATH 注入用对键名（Windows 上进程环境里是 Path 而不是 PATH）', () => {
+  const injected = withMediaPath({ Path: 'C:\\a' }, 'C:\\ff', 'win32')
+  assert.equal(injected.Path, `C:\\ff${path.delimiter}C:\\a`)
+  // 只写 PATH 会变成「两个键共存」，取哪个由子进程决定 —— 最难查的一类环境 bug。
+  assert.equal('PATH' in injected, false)
+  // 反向验证：已经在 PATH 里就不重复前置（否则每次启动都会越长越长）。
+  assert.equal(withMediaPath({ Path: `C:\\ff${path.delimiter}C:\\a` }, 'C:\\ff', 'win32').Path, `C:\\ff${path.delimiter}C:\\a`)
+  // 找不到工具时环境原样返回，绝不塞空值。
+  const untouched = { Path: 'C:\\a' }
+  assert.equal(withMediaPath(untouched, null, 'win32'), untouched)
+})
+
+test('媒体工具：缺 ffmpeg 时的提示要说清「哪个格式会失败」与怎么修', () => {
+  const text = mediaToolWarning()
+  assert.ok(text.includes('WebP'), '要点名 WebP —— 用户的图就是它')
+  assert.ok(text.includes('400'), '要给出客户端看到的错误')
+  assert.ok(text.includes('winget'), '要给出可执行的修复命令')
+})
+
+// ── 启动参数报告（设置页顶部那块）──────────────────────────────────────────
+section('启动参数报告')
+
+const LAUNCH_ARGS = [
+  '-m', 'D:/m/x.gguf', '--host', '127.0.0.1', '--port', '18080',
+  '-c', '262144', '-ngl', '-1', '-b', '512',
+  '--kvmem-budget', '36864', '--kvmem-gen-reserve', '16384',
+  '--spec-type', 'draft-mtp', '--mmproj', 'D:/m/mmproj.gguf', '--jinja',
+]
+
+test('启动参数报告：逐项一行，负数取值不会被当成新选项', () => {
+  const lines = renderLaunchLines('E:/bin/server.exe', LAUNCH_ARGS)
+  assert.equal(lines[0], 'E:/bin/server.exe', '第一行是可执行文件')
+  // 自引用判据：把拆出来的行原样拼回去，必须与输入的 args 逐字相同 ——
+  // 既不丢项也不造项。数行数写死会在改夹具时假失败，而这条永远对得上。
+  const rebuilt = lines.slice(1).map((line) => line.trim()).join(' ').split(/\s+/)
+  assert.deepEqual(rebuilt, LAUNCH_ARGS, `拆行不能丢项或造项：${lines.join(' | ')}`)
+  assert.ok(
+    lines.some((line) => line.trim() === '-ngl -1'),
+    `-1 必须跟在自己的选项后面，实际：${lines.join(' | ')}`,
+  )
+})
+
+test('启动参数报告：摘要从真实 args 解析，并由工作集 + 预留派生合计', () => {
+  const report = buildLaunchReport({ executable: 'E:/bin/server.exe', args: LAUNCH_ARGS })
+  const fact = (label) => report.facts.find((item) => item.label === label)
+  assert.equal(fact('上下文长度 -c').value, '262144')
+  assert.equal(fact('GPU 工作集 --kvmem-budget').value, '36864')
+  assert.equal(fact('解码预留 --kvmem-gen-reserve').value, '16384')
+  // 自引用判据：合计必须等于前两项之和（不写死数字，改了预算它也跟着对）。
+  const total = Number(fact('GPU KV 合计').value.replace(' token', ''))
+  assert.equal(total, 36864 + 16384)
+  assert.equal(fact('组合').value, 'MTP + 视觉 同时启用')
+  assert.equal(fact('模型文件').value, 'x.gguf', '只显示文件名，完整路径进 note')
+})
+
+test('启动参数报告：识别不出选项时宁可列出来，也不让它隐形', () => {
+  const clean = buildLaunchReport({ executable: 'x', args: LAUNCH_ARGS })
+  assert.deepEqual(clean.unrecognized, [], '这份参数里没有识别表之外的东西')
+  // 反向验证：加一个识别表里没有的选项，必须被点名 —— 否则「看不见的参数」这条防线是假的。
+  const dirty = buildLaunchReport({ executable: 'x', args: [...LAUNCH_ARGS, '--brand-new-flag'] })
+  assert.deepEqual(dirty.unrecognized, ['--brand-new-flag'])
+})
+
+test('启动参数报告：命令行单行版给含空格的值加引号', () => {
+  const line = renderReportCommandLine('a.exe', ['-m', 'D:/my models/x.gguf', '--port', '1'])
+  assert.ok(line.startsWith('a.exe -m '))
+  assert.ok(line.includes('"D:/my models/x.gguf"'), `实际：${line}`)
+})
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────
 console.log(`\n通过 ${passed}，失败 ${failed}`)

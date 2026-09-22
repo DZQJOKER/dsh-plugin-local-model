@@ -47,12 +47,24 @@ async function step(name, fn) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-/** 静默日志：端到端测试只关心行为，不想刷屏。改成 { verbose: true } 可看到插件日志。 */
+/**
+ * 静默日志：端到端测试只关心行为，不想刷屏。改成 --verbose 可看到插件日志。
+ *
+ * warn / error 也进 `logs`：有些行为只能从「它警告了什么」来断言 ——
+ * 比如「服务端拒绝后压低 max_tokens 重试」这条路径，请求最终成功了，
+ * 单看响应看不出中间发生过重试，唯一的证据就是那条 warn。
+ */
 const verbose = process.argv.includes('--verbose')
 const logs = []
 const log = {
-  error: (...a) => verbose && console.log('[error]', ...a),
-  warn: (...a) => verbose && console.log('[warn]', ...a),
+  error: (...a) => {
+    logs.push(a.join(' '))
+    if (verbose) console.log('[error]', ...a)
+  },
+  warn: (...a) => {
+    logs.push(a.join(' '))
+    if (verbose) console.log('[warn]', ...a)
+  },
   info: (...a) => {
     logs.push(a.join(' '))
     if (verbose) console.log('[info]', ...a)
@@ -149,6 +161,21 @@ async function buildRuntime(overrides = {}) {
       preserveThinking: config.preserveThinking,
       supportedEfforts: runtime.reasoningEfforts,
     }),
+    // 溢出保护：生产里由 index.ts 注入（默认开启，n_ctx 取 ctxSize）。
+    // 测试里拿 FAKE_HARD_MAX_TOKENS 兼作开关 —— 只有专门测「服务端硬拒绝 400」的用例才打开它，
+    // 其它用例保持直通，否则每个断言都得先算一遍 max_tokens 会被压到多少。
+    // limits 的取值与 contextGuard.DEFAULT_GUARD_LIMITS 一致；这里写死是为了让用例里的
+    // 期望值（3072 / 1536）一眼能看出是从哪来的。
+    ...(Number.isFinite(Number(process.env.FAKE_HARD_MAX_TOKENS))
+      ? {
+          contextGuard: () => ({
+            nCtx: config.ctxSize,
+            floor: 512,
+            reserveForPrompt: 1024,
+            maxAttempts: 5,
+          }),
+        }
+      : {}),
     log,
   })
   runtime.attachProxy(proxy)
@@ -432,6 +459,64 @@ await step('插件卸载时：清理进程与端口', async () => {
   await waitFor(() => !isProcessAlive(status.pid), 5000, 'dispose 后进程应退出')
   await waitFor(() => isPortFree(ctx.config.host, port), 5000, 'dispose 后上游端口应释放')
   await rm(ctx.home, { recursive: true, force: true })
+})
+
+// ── 输出上限溢出保护（本轮线上 400 故障的端到端防线）────────────────────────
+await step('溢出保护：服务端硬拒绝时逐级压低 max_tokens 重试，而不是把 400 丢给用户', async () => {
+  process.env.FAKE_HARD_MAX_TOKENS = '2048'
+  const ctx = await buildRuntime({ ctxSize: 4096 })
+  try {
+    await ctx.runtime.init()
+    const res = await request(`${ctx.proxy.origin}/v1/chat/completions`, {
+      method: 'POST',
+      body: {
+        model: 'local',
+        messages: [{ role: 'user', content: 'hi' }],
+        // 荒唐的大值：真实故障里 dsh 发的是 128000，而服务端 -c 只有 32768。
+        max_tokens: 999999,
+      },
+    })
+
+    assert.equal(res.status, 200, `重试后应当成功：${res.status} ${res.text.slice(0, 200)}`)
+    const payload = JSON.parse(res.text)
+    // 预防性收敛先压到 n_ctx - reserveForPrompt = 4096 - 1024 = 3072（仍超过替身的 2048），
+    // 再减半到 1536 才被接受 —— 这个数字就是「压到多少才装得下」的实测值。
+    assert.equal(payload._echo.max_tokens, 1536, '重试必须真的改写了发往上游的 max_tokens')
+    assert.ok(
+      logs.some((line) => line.includes('已把输出上限从')),
+      '重试必须留下日志，否则用户不知道自己的配置有问题',
+    )
+  } finally {
+    delete process.env.FAKE_HARD_MAX_TOKENS
+    await teardown(ctx)
+  }
+})
+
+await step('溢出保护：实在装不下时给出「为什么」，而不是一句读不懂的英文', async () => {
+  process.env.FAKE_HARD_MAX_TOKENS = '0' // 任何非零上限都被拒 → 一定会压到下限
+  const ctx = await buildRuntime({ ctxSize: 4096 })
+  try {
+    await ctx.runtime.init()
+    const res = await request(`${ctx.proxy.origin}/v1/chat/completions`, {
+      method: 'POST',
+      body: { model: 'local', messages: [{ role: 'user', content: 'hi' }], max_tokens: 999999 },
+    })
+
+    assert.equal(res.status, 400, `压到下限仍被拒时必须交回失败：${res.status}`)
+    const payload = JSON.parse(res.text)
+    assert.equal(payload.error.type, 'context_overflow')
+    assert.ok(payload.error.message.includes('4096'), `说明里要带上真实 n_ctx：${payload.error.message}`)
+    assert.ok(
+      payload.error.message.includes('contextWindow'),
+      `要指向最可能的原因（路由声明与启动参数不一致）：${payload.error.message}`,
+    )
+    // 原文保留在 detail 里 —— 服务端那句报错里既没有 n_ctx 也没有提示词长度，
+    // 但它是对着日志排查时唯一的第一手证据。
+    assert.ok(payload.error.detail.includes('exceeds n_ctx'), '原文必须留一份')
+  } finally {
+    delete process.env.FAKE_HARD_MAX_TOKENS
+    await teardown(ctx)
+  }
 })
 
 console.log(`\n通过 ${passed}，失败 ${failed}`)

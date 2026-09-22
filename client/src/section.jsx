@@ -187,6 +187,14 @@ export function LocalModelSection() {
       ) : null}
 
       {/*
+        本次启动参数放在最顶部。
+        它是这一页唯一能回答「现在到底跑在什么参数上」的地方，而换模型 / 调参数时最想看的
+        就是它 —— 放在状态卡之后就意味着每次都要先滚过一张卡才看得到。
+        数据来自宿主从**真实下发的 args** 解析出的报告，不是从配置读的。
+      */}
+      <LaunchPanel launch={state.runtime.launch} loadedAt={state.runtime.loadedAt} />
+
+      {/*
         参数预设条固定在页面顶部（sticky）：它是这一页唯一「随时要用」的操作区 ——
         下面那几十项参数是用来调的，切换整套参数时不该还让用户滚回顶部去找按钮。
       */}
@@ -365,6 +373,111 @@ export function LocalModelSection() {
         </button>
         <span style={S.dirty}>{dirtyCount > 0 ? `有 ${dirtyCount} 项未保存` : '没有未保存的修改'}</span>
       </div>
+    </div>
+  )
+}
+
+/**
+ * 「本次启动参数」面板（设置页最顶部）。
+ *
+ * 三块内容，各自解决一个具体问题：
+ *   1. **逐项一行的代码块** —— 看清*实际下发*了什么。注意它是从宿主侧的真实 args 来的，
+ *      不是从设置页的草稿来的：两者之间隔着门控跳过、构建默认值与自动收敛；
+ *   2. **参数摘要** —— 把关键数字挑出来（含派生的「GPU KV 合计」），省得在几十项里找；
+ *   3. **提示与未识别项** —— 「有哪几项被这个构建跳过了」过去只躺在日志里；
+ *      而识别表没覆盖到的选项宁可列出来，也不要让任何一项隐形（看不见的参数最危险）。
+ */
+function LaunchPanel({ launch, loadedAt }) {
+  const [copied, setCopied] = useState('')
+  const lines = Array.isArray(launch?.lines) ? launch.lines : []
+  const facts = Array.isArray(launch?.facts) ? launch.facts : []
+  const notices = Array.isArray(launch?.notices) ? launch.notices : []
+  const unrecognized = Array.isArray(launch?.unrecognized) ? launch.unrecognized : []
+
+  if (lines.length === 0) {
+    return (
+      <div style={S.card}>
+        <p style={S.subTitle}>本次启动参数</p>
+        <p style={S.groupHint}>
+          模型尚未加载。加载完成后，这里会列出本次**真正下发给 llama-server** 的全部参数。
+        </p>
+      </div>
+    )
+  }
+
+  // 按 group 分组，但保持报告里的出现顺序 —— 报告的顺序就是命令行的顺序。
+  const groups = []
+  for (const fact of facts) {
+    let group = groups.find((item) => item.name === fact.group)
+    if (!group) {
+      group = { name: fact.group, items: [] }
+      groups.push(group)
+    }
+    group.items.push(fact)
+  }
+
+  const when = loadedAt ? new Date(loadedAt).toLocaleTimeString() : ''
+  const copy = () => {
+    const text = launch.commandLine ?? lines.join('\n')
+    const done = (ok) => {
+      setCopied(ok ? '已复制' : '复制失败')
+      setTimeout(() => setCopied(''), 1500)
+    }
+    try {
+      const pending = navigator.clipboard?.writeText(text)
+      if (pending && typeof pending.then === 'function') pending.then(() => done(true), () => done(false))
+      else done(false)
+    } catch {
+      done(false)
+    }
+  }
+
+  return (
+    <div style={S.card}>
+      <div style={S.panelHead}>
+        <p style={{ ...S.subTitle, margin: 0 }}>
+          本次启动参数{when ? ` · ${when}` : ''}
+          <span style={{ ...S.factNote, marginLeft: 8 }}>（服务器实际收到的全部参数）</span>
+        </p>
+        <span style={S.panelHeadSpacer} />
+        <button style={S.button} onClick={copy}>
+          {copied || '复制命令行'}
+        </button>
+      </div>
+
+      <pre style={S.codeBlock}>{lines.join('\n')}</pre>
+
+      {groups.length > 0 ? (
+        <div style={S.factGrid}>
+          {groups.flatMap((group) => [
+            <div
+              key={`group-${group.name}`}
+              style={{ ...S.factLabel, gridColumn: '1 / -1', marginTop: 4, fontWeight: 500 }}
+            >
+              {group.name}
+            </div>,
+            ...group.items.map((fact, index) => (
+              <div key={`${group.name}-${index}`} style={S.factCell}>
+                <span style={S.factLabel}>{fact.label}</span>
+                <span style={S.factValue}>{fact.value}</span>
+                {fact.note ? <span style={S.factNote}>{fact.note}</span> : null}
+              </div>
+            )),
+          ])}
+        </div>
+      ) : null}
+
+      {notices.map((text, index) => (
+        <div key={`notice-${index}`} style={{ ...S.banner, ...S.hint, marginTop: 12, marginBottom: 0 }}>
+          {text}
+        </div>
+      ))}
+
+      {unrecognized.length > 0 ? (
+        <div style={{ ...S.banner, ...S.warn, marginTop: 12, marginBottom: 0 }}>
+          这几个选项不在识别表里（可能来自「附加参数」）：{unrecognized.join('、')}
+        </div>
+      ) : null}
     </div>
   )
 }

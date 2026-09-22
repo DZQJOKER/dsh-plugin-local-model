@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 
 import type { Log } from './log.js'
 import type { ResolvedConfig } from './configResolve.js'
+import { consistencyNotices } from './configResolve.js'
 import {
   scanModelsDetailed,
   pickModel,
@@ -13,6 +14,8 @@ import {
 } from './registry.js'
 import { ensureReadme } from './paths.js'
 import { buildLlamaServerArgs, DEFAULT_ALIAS, type LlamaServerArgInput } from './llama/args.js'
+import { buildLaunchReport, type LaunchReport } from './launchReport.js'
+import { findMediaTools, mediaToolWarning, withMediaPath } from './llama/media.js'
 import { describeSearchScope, locateLlamaServer } from './llama/detect.js'
 import {
   isFlashAttnFormError,
@@ -90,6 +93,15 @@ export interface RuntimeStatus {
    * 排查「拨了没反应」时第一眼就该看到它。
    */
   reasoningEfforts: string[] | null
+  /**
+   * 本次启动的完整参数报告；从没加载过模型时为 null。
+   *
+   * 解析对象是**真正下发给 llama-server 的 args**，不是设置页里的配置 ——
+   * 两者之间隔着门控跳过、构建默认值与自动收敛（`-ub <= -b`、`-np 1` 之类），
+   * 只有 args 能回答「现在到底跑在什么参数上」。设置页顶部把它渲染成代码块，
+   * 用户不必再去日志里翻那一行几百字符的命令行。
+   */
+  launch: LaunchReport | null
 }
 
 /** 插件向生命周期层注入的代理句柄，避免 lifecycle 直接依赖 http 实现。 */
@@ -208,6 +220,39 @@ export function buildArgInput(
     cacheTypeV: config.cacheTypeV,
     kvUnified: config.kvUnified,
     kvStreamStageMib: config.kvStreamStageMib,
+    // ── KVMem 家族与新增启动项 ──────────────────────────────────────────────
+    // 全部原样透传：拼参数层（args.ts）才是唯一决定「这一项发不发」的地方，
+    // 门控与「-1 = 不下发」哨兵都写在那里，这里再判断一次只会造成两处规则漂移。
+    kvmemEnabled: config.kvmemEnabled,
+    kvmemBudget: config.kvmemBudget,
+    kvmemGenReserve: config.kvmemGenReserve,
+    kvmemBlockTokens: config.kvmemBlockTokens,
+    kvmemSinkTokens: config.kvmemSinkTokens,
+    kvmemRecentTokens: config.kvmemRecentTokens,
+    kvmemMethod: config.kvmemMethod,
+    kvmemQueryLast: config.kvmemQueryLast,
+    kvmemQueryMaxTokens: config.kvmemQueryMaxTokens,
+    kvmemQueryReplay: config.kvmemQueryReplay,
+    kvmemQueryPolicy: config.kvmemQueryPolicy,
+    kvmemMtpState: config.kvmemMtpState,
+    kvmemGpuRatio: config.kvmemGpuRatio,
+    kvmemCpuGb: config.kvmemCpuGb,
+    kvmemNvmeGb: config.kvmemNvmeGb,
+    kvmemNvmeDir: config.kvmemNvmeDir,
+    kvmemHarvestV: config.kvmemHarvestV,
+    kvmemRawKNvme: config.kvmemRawKNvme,
+    nPredict: config.nPredict,
+    loadMode: config.loadMode,
+    kvDtype: config.kvDtype,
+    specKvDtype: config.specKvDtype,
+    specDraftNMax: config.specDraftNMax,
+    specDraftPMin: config.specDraftPMin,
+    frequencyPenalty: config.frequencyPenalty,
+    mmprojOffload: config.mmprojOffload,
+    chatTemplateFile: config.chatTemplateFile,
+    chatTemplateKwargs: config.chatTemplateKwargs,
+    reasoningEffort: config.reasoningEffort,
+    reasoningBudgetMessage: config.reasoningBudgetMessage,
     temp: config.temp,
     topK: config.topK,
     topP: config.topP,
@@ -229,8 +274,10 @@ export function buildArgInput(
       mmprojFile: config.mmprojFile,
       autoMmproj: entry.mmproj,
       mtp: config.mtp,
+      mtpWithVision: config.mtpWithVision,
     }),
     mtp: config.mtp,
+    mtpWithVision: config.mtpWithVision,
     mmap: config.mmap,
     mlock: config.mlock,
     apiKey: config.apiKey,
@@ -244,11 +291,34 @@ export function defaultServerLauncher(input: LaunchInput): LlamaServerLike {
   const built = buildLlamaServerArgs(
     buildArgInput(config, entry, { port, flashAttnMode, gpuLayersSupport, knownFlags }),
   )
+
+  /**
+   * 外部媒体工具（ffmpeg / ffprobe）—— 本插件里唯一「参数全对、模型也加载成功，
+   * 但看图照样 400」的坑。
+   *
+   * llama.cpp 内置的图像解码器认识 png / jpeg / gif / bmp，**不认识 webp**；
+   * 遇到 webp 它会去起外部的 `ffprobe` 探测、`ffmpeg` 转码，而这两个是从 **PATH** 里找的
+   * （这个构建砍掉了 `--ffmpeg-path`，只剩 PATH 一条路）。机器上没装 ffmpeg 时：
+   *     probe: failed to launch ffprobe
+   *     mtmd_helper_bitmap_init_from_buf: failed to decode webp buffer
+   * 客户端拿到 400「Failed to load image or audio file」，而同一批里的 jpeg 却正常识别 ——
+   * 表现是「时好时坏」，很容易被当成插件或模型坏了。
+   *
+   * 所以这里把它**前置进子进程的 PATH**：装完 ffmpeg 立刻生效，不必让用户改系统 PATH
+   * 再重启 dsh（winget 装完那个别名目录并不保证进入已运行进程的环境）。
+   */
+  const media = findMediaTools()
+  if (media.dir) {
+    log.info(`媒体工具就绪：${media.dir}（WebP / AVIF 这类图片靠它解码）`)
+  } else if (built.args.includes('--mmproj')) {
+    log.warn(mediaToolWarning())
+  }
+
   return new LlamaServer({
     command: executable,
     args: built.args,
     cwd: dirnameOf(executable),
-    env: { ...process.env, ...config.envOverrides },
+    env: withMediaPath({ ...process.env, ...config.envOverrides }, media.dir),
     pidFile: config.paths.pidFile,
     log,
     onExit,
@@ -283,6 +353,8 @@ export class LocalModelRuntime {
 
   private upstreamPort = 0
   private commandLine = ''
+  /** 本次启动的参数报告（设置页顶部的面板用它渲染）；未加载时为 null。 */
+  private launch: LaunchReport | null = null
   private loadedAt: number | null = null
   private lastActivityAt = Date.now()
   /** 上次 tick() 跑过的时间；用来回答"5 分钟过去了吗" —— 即使 tick 没真的触发卸载。 */
@@ -530,11 +602,14 @@ export class LocalModelRuntime {
    */
   private visionDisabledByMtp(entry: LocalModelEntry): string | null {
     if (!this.config.mtp) return null
+    // 「MTP 与视觉共存」默认为开（kvmem 分支支持），此时视觉并没有被顶掉。
+    if (this.config.mtpWithVision) return null
     const wouldBe = resolveVisionProjector(this.config.modelsDir, this.config.mmprojFile, entry.mmproj)
     if (!wouldBe) return null
     return (
       `已开启多 Token 预测（MTP），本次加载不会下发 --mmproj（${wouldBe}）：` +
-      'llama.cpp 的 MTP 与图像输入不能同时使用。需要看图请关掉 MTP。'
+      '「MTP 与视觉共存」被关掉了，两个选项恢复互斥。' +
+      '要同时用 MTP 和看图，把它打开（kvmem 分支的 llama-kvmem-server 支持这种组合）。'
     )
   }
 
@@ -637,6 +712,7 @@ export class LocalModelRuntime {
       mtp: this.config.mtp,
       visionDisabledByMtp: entry ? this.visionDisabledByMtp(entry) : null,
       reasoningEfforts: this.supportedEfforts ? [...this.supportedEfforts] : null,
+      launch: this.launch,
     }
   }
 
@@ -741,8 +817,21 @@ export class LocalModelRuntime {
       // 第二种形状只在「按第一种加载失败且失败原因是 flash-attn 形状」时才会被用到。
       const attempts: FlashAttnMode[] = preferred === 'unsupported' ? ['unsupported'] : [preferred, 'unsupported']
 
+      // 配置一致性提醒：与 flash-attn 的两种尝试无关，所以放在循环外面只打一次。
+      // 这些数字各自写在不同的地方（dsh 路由声明 / 启动参数 / kvmem 解码预留），
+      // 对不上时加载阶段一声不响，要等到某次对话才以一条读不懂的服务端错误爆出来。
+      for (const notice of consistencyNotices(this.config)) this.log.warn(`配置提醒：${notice}`)
+
       let server: LlamaServerLike | null = null
       let failure: unknown = null
+      /**
+       * 最后一次拼出来的参数，用于启动后生成「本次启动参数」报告。
+       *
+       * 必须在循环外面接住：`built` 的作用域只在循环体内，出来就没了，
+       * 而报告要的正是**实际下发的那一份**（含门控跳过与自动收敛的结果，
+       * 不是设置页里填的那一份）。
+       */
+      let lastBuilt: ReturnType<typeof buildLlamaServerArgs> | null = null
 
       for (const mode of attempts) {
         const built = buildLlamaServerArgs(
@@ -754,6 +843,7 @@ export class LocalModelRuntime {
             knownFlags: capabilities.ok ? capabilities.flags : null,
           }),
         )
+        lastBuilt = built
         for (const notice of built.notices) this.log.warn(`参数提示：${notice}`)
 
         if (capabilities.ok) {
@@ -805,6 +895,16 @@ export class LocalModelRuntime {
 
       this.server = server
       this.commandLine = server.commandLine
+      /**
+       * 启动参数报告：从**真实下发的 args** 生成，不是从配置读的。
+       *
+       * 两者之间隔着门控跳过、构建默认值与自动收敛（`-ub <= -b`、`-np 1` 之类），
+       * 所以只有 args 能回答「现在到底跑在什么参数上」。
+       * 设置页顶部把它渲染成代码块 + 参数摘要 + 提示，用户不必再去日志里翻命令行。
+       */
+      this.launch = lastBuilt
+        ? buildLaunchReport({ executable: location.path, args: lastBuilt.args, notices: lastBuilt.notices })
+        : null
       this.loadedAt = Date.now()
 
       // 这两件事必须在宣布 ready **之前**做完，否则「加载后的第一个请求」会用到空状态：

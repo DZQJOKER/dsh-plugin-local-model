@@ -12,6 +12,16 @@
 
 ## 更新日志
 
+- **0.7.0** — ① **修掉「装上视觉投影文件后一直报 400 `Failed to load image or audio file`」**。根因不在插件、也不在模型：llama.cpp 内置的图像解码器只认 png / jpeg / gif / bmp 这些老格式，**不认识 WebP**；遇到 WebP 它会去起外部的 `ffprobe` 探测、`ffmpeg` 转码，而这两个是从 **PATH** 里找的（这个构建砍掉了 `--ffmpeg-path`，只剩 PATH 一条路）。机器上没装 ffmpeg 时，服务端会打 `probe: failed to launch ffprobe` / `failed to decode webp buffer`，客户端拿到 400 —— 而**同一批里的 JPEG 却能正常识别**（dsh 转码时两种格式都会产出，实测 `.dsh/attachments/v1/request-images/` 下两种都有），所以表现是「时好时坏」，极易被当成插件或模型坏了。现在：**插件会自动找到 ffmpeg 并把它的目录前置进 llama-server 子进程的 PATH**（不必改系统 PATH、也不必为此重启 dsh），找不到且已开视觉时会打出一条说清「哪个格式会失败、为什么只有它、怎么修」的警告。装法：`winget install Gyan.FFmpeg`。
+  ② **MTP 与视觉投影从「互斥」改为「可共存」**（新增设置项 `mtpWithVision`，**默认开启**）。原规则来自上游 llama.cpp（两者同时下发会加载失败），但 **kvmem 分支的 `llama-kvmem-server` 实测支持**：同时给 `--mmproj` 与 `--spec-type draft-mtp` 时 `clip_model_loader: has vision encoder` 与 `creating MTP draft context` 会同时出现、服务正常起来、看图对话也能识别（2026-09-21 本机验证）。换回官方 llama.cpp 的用户把这个开关关掉即恢复旧的互斥行为（MTP 生效、`--mmproj` 被忽略并给出说明）。
+  ③ **设置页顶部新增「本次启动参数」面板**：把这次**真正下发给 llama-server 的完整命令行**逐项一行列出来（不是设置页里填的那一份 —— 两者之间隔着门控跳过、构建默认值与自动收敛），配一张参数摘要（含派生的「GPU KV 合计 = 工作集 + 解码预留」）、一条「复制命令行」按钮、以及**被跳过的选项**与**识别表没覆盖到的选项**（后者过去只躺在日志里）。刷新跟随运行状态轮询，换模型/改参数后自动更新。
+
+- **0.6.0** — ① **补齐 kvmem 分支（`kvmem/kvmem-llama.cpp`）的全部缺失启动参数**，共 31 项：KVMem 家族 18 项（`--kvmem` / `--kvmem-budget` / **`--kvmem-gen-reserve`** / `--kvmem-block-tokens` / `--kvmem-sink-tokens` / `--kvmem-recent-tokens` / `--kvmem-method` / `--kvmem-query-last` / `--kvmem-query-max-tokens` / `--kvmem-query-replay` / `--kvmem-query-policy` / `--kvmem-mtp-state` / `--kvmem-gpu-ratio` / `--kvmem-cpu-gb` / `--kvmem-nvme-gb` / `--kvmem-nvme-dir` / `--kvmem-harvest-v` / `--kvmem-raw-k-nvme`）、外加 `-n/--n-predict`、`-lm/--load-mode`、`--kv-dtype`、`--spec-kv-dtype`、`--spec-draft-n-max`、`--spec-draft-p-min`、`--frequency-penalty`、`--mmproj-offload`、`--chat-template-file`、`--chat-template-kwargs`、`--reasoning-effort`、`--reasoning-budget-message`。**默认值一律是「不下发」**（数字项用 `-1` 当哨兵、字符串用空串），所以装官方 llama.cpp 的部署**行为一字不变**；kvmem 专有项走**严格门控**，探测不到就整体跳过并在日志里说明。
+  ② **新增「输出上限溢出保护」**（`guardContextOverflow`，默认开启）。上游 llama.cpp 遇到 `prompt + max_tokens > n_ctx` 只打一条 warning 再自行收敛，而 kvmem 那个独立 server 是**硬拒绝**：`HTTP 400 {"error":"prompt + max_tokens exceeds n_ctx"}` —— 报错里既没有 prompt 长度也没有 n_ctx，用户只能乱试。现在代理会先把「必然失败」（`max_tokens >= n_ctx`，任何非空提示词都放不下）的上限预防性压到 `n_ctx − 1024`，再对服务端明确拒绝的请求**逐级减半重试**（只缓冲 400，其余状态码照旧流式直通，正常对话零额外开销）；实在装不下时把原文换成一句带上真实 `n_ctx` 与最可能原因的中文说明。
+  ③ 新增**加载期配置一致性提醒**：`maxTokens` 不小于 `ctxSize`（本轮线上故障的根因）、超过一半、或 `--kvmem-gen-reserve` 小于单次输出上限时，加载日志里直接点明后果与建议值。
+  ④ 修掉一处**静默缺陷**：被跳过选项的汇总提示原先在采样参数之后就结算了，导致后面新增的每一项（`--kvmem-*` / `-n` / `-lm` …）被跳过后都不会出现在日志里。
+  ⑤ 新增「**KVMem 分块缓存**」与「**多 Token 预测（MTP）细节**」两个设置分组。
+
 - **0.5.3** — 修掉「**换了一个 llama 分支，插件就起不来了**」。用户把可执行文件换成那个
   `kvmem-v0.16.0-rc2` 的 `llama-kvmem-server.exe`（一个独立的 OpenAI 兼容 server，
   选项表只是 llama.cpp 的真子集），加载直接失败：
@@ -367,7 +377,9 @@ schema 默认值  →  组合层（cordis.patch.yml / 部署配置）  →  <DSH
 | --- | --- |
 | 模型与目录 | `enabled`、`selectedModel`、`mmprojFile`（视觉投影文件）、**`mtp`（多 Token 预测，开启后自动禁用视觉投影）**、**`imageMinTokens` / `imageMaxTokens`（每张图的 token 预算下限/上限）**、`modelsDir`、`runtimeDir`、`llamaServerPath`、`preload` |
 | 服务与端口 | `host`（默认只听回环）、`port`（默认 18080）、`llamaPort`（默认 0 = 每次自动挑空闲端口） |
-| 推理参数 | `ctxSize`、**`maxTokens`（单次最大输出 tokens）**、`gpuLayers`、`threads`、`batchSize`/`ubatchSize`、`flashAttention`、**`reasoningBudget`（推理 token 预算）**、`jinja`、`chatTemplate`、`enableThinking`、`preserveThinking`、`mmap`、`mlock` |
+| 推理参数 | `ctxSize`、**`maxTokens`（单次最大输出 tokens）**、**`nPredict`（服务端默认输出上限）**、**`guardContextOverflow`（输出上限溢出保护，默认开）**、`gpuLayers`、`loadMode`、`threads`、`batchSize`/`ubatchSize`、`flashAttention`、`mmprojOffload`、**`mtpWithVision`（MTP 与视觉共存，默认开）**、**`reasoningBudget`（推理 token 预算）**、`reasoningBudgetMessage`、`reasoningEffort`、`jinja`、`chatTemplate`、`chatTemplateFile`、`chatTemplateKwargs`、`enableThinking`、`preserveThinking`、`mmap`、`mlock` |
+| 多 Token 预测（MTP）细节 | `specKvDtype`、`specDraftNMax`、`specDraftPMin`（只在开了上面「多 Token 预测（MTP）」时生效） |
+| KVMem 分块缓存（kvmem 分支专有） | `kvmemEnabled`、`kvmemBudget`、**`kvmemGenReserve`（解码预留 = 单次生成上限，构建默认仅 256）**、`kvmemBlockTokens`、`kvmemSinkTokens`、`kvmemRecentTokens`、`kvmemMethod`、`kvmemQueryLast`、`kvmemQueryMaxTokens`、`kvmemQueryReplay`、`kvmemQueryPolicy`、`kvmemMtpState`、`kvmemGpuRatio`、`kvmemCpuGb`、`kvmemNvmeGb`、`kvmemNvmeDir`、`kvmemHarvestV`、`kvmemRawKNvme`。**整组默认值都是「不下发」**（数字 `-1`、字符串留空）；官方 llama.cpp 构建上会被整体跳过并记日志 |
 | **采样与 KV 缓存** | **`kvUnified`（统一 KV 缓存）**、**`kvStreamStageMib`（KV 主机内存暂存 MiB）**、**`temp`、`topK`、`topP`、`minP`、`presencePenalty`、`repeatPenalty`、`repeatLastN`、`seed`** |
 | 加载与卸载 | `idleUnloadMinutes`（默认 5）、`startupTimeoutMs`、`shutdownGraceMs`、`autoRestart`、`maxRestarts` |
 | 诊断与高级 | `apiKey`、`extraArgs`、`envOverrides`、`logLevel`（排查加载问题设 `debug`） |
@@ -412,11 +424,30 @@ schema 默认值  →  组合层（cordis.patch.yml / 部署配置）  →  <DSH
 `0.3.1` 新增，**默认关闭**。开启后加载时下发 `--spec-type draft-mtp`，让模型用它**自带的预测头**
 一次猜测并校验多个 token（投机解码），本地生成速度通常能提升 1.2～2 倍，回复越长越明显。
 
-**开启 MTP 会自动禁用视觉投影文件（`--mmproj`）** —— 这两者在 llama.cpp 里目前不能共存，强行一起下发
-会导致加载直接失败。所以这条互斥规则写在**参数拼装层**（`src/llama/args.ts` 的 `buildLlamaServerArgs`）：
-只要 `mtp` 为真，`--mmproj` 就绝不可能漏下去，无论界面上选了什么、也无论调用方传了什么。
-界面上对应的下拉框会**立即置灰**（读的是未保存的草稿值，不必先保存），状态卡则说明「视觉投影已被 MTP 顶掉」。
-关掉 MTP 后你选的 `mmprojFile` **不会被清空**，只是暂时不生效 —— 免得来回切开关时丢配置。
+**MTP 与视觉投影的关系见下一节「MTP 与视觉共存」** —— `0.7.0` 起两者默认可以同时开启，
+互斥规则只有在关掉 `mtpWithVision` 时才恢复（上游 llama.cpp 需要那样）。
+
+### MTP 与视觉共存（`0.7.0`）
+
+设置项 `mtpWithVision`，**默认开启**。上游 llama.cpp 里 MTP 与图像输入不能同时下发（会加载失败），
+但 **kvmem 分支的 `llama-kvmem-server` 支持**：同时给 `--mmproj` 与 `--spec-type draft-mtp` 时
+`clip_model_loader: has vision encoder` 与 `creating MTP draft context` 会同时出现、服务正常起来、
+看图对话也能识别（2026-09-21 本机实测）。所以默认允许「开着 MTP 用图片」。
+
+关掉它即恢复旧的互斥：MTP 生效、`--mmproj` 被忽略 —— 界面上下拉框会置灰、状态卡说明原因，
+**你选的 `mmprojFile` 不会被清空**（免得来回切开关时丢配置）。换回官方 llama.cpp 的用户请关掉本项。
+
+### 本次启动参数面板（`0.7.0`）
+
+设置页**最顶部**会显示这次**真正下发给 llama-server 的完整命令行**（逐项一行），外加一张参数摘要
+（含派生的「GPU KV 合计 = 工作集 + 解码预留」）和一个「复制命令行」按钮。
+
+两个刻意的取舍：
+
+- **数据源是下发的 args，不是设置页里的配置。** 两者之间隔着门控跳过、构建默认值与自动收敛
+  （`-ub <= -b`、`-np 1` 之类），只有 args 能回答「现在到底跑在什么参数上」。
+- **它还会列出「识别表没覆盖到的选项」。** 识别表会随构建变化而过时；漏掉的项如果不说出来，
+  用户就永远不知道它被发了 —— 看不见的参数比错的值更危险。
 
 | 事实 | 说明 |
 | --- | --- |
@@ -705,6 +736,9 @@ disabled ──启用──▶ idle ──首条对话──▶ starting ──�
 | 加载失败，日志里出现 `error while handling argument "--xxx": unknown value for --xxx: '--yyy'` | **参数形状不匹配**：解析器把下一个参数当成前一个的值吃掉了。插件已内置探测与自动重试（见第 4 节），若你仍在旧版本上遇到，升级到 0.2.1+ 即可；诊断用 `npm run verify:llama` |
 | 换了 llama 分支后加载失败，日志里出现 `unknown flag: --alias`（或 `-ub` / `--repeat-last-n` / `-t` / `--no-mmap` / `--api-key`） | 这个分支**不是** llama.cpp 的 `llama-server`（例如 `llama-kvmem-server.exe` 这类独立 OpenAI 兼容 server），它的选项表只是 llama.cpp 的子集，且对未知选项是直接退出 1。插件会在启动前按 `--help` 探测并跳过它不认识的选项（0.5.3+），日志里能看到「已跳过：--alias、-ub、…」；升级到该版本即可。若你在旧版本上，临时办法是在「设置 → 本地模型 → llama-server 路径」换回官方 llama.cpp 构建 |
 | 加载失败，日志里出现 `invalid --seed: seed out of range [0, 4294967295]` | 这个分支把 `--seed` 校验成 uint32，而插件默认值是 `-1`（= 随机）。0.5.3+ 起**负数一律不下发该参数**（与「随机」等价：llama.cpp 的默认值本来就是 `-1`），因此不会再出现；旧版本上把「随机数种子」填成 0 或任意正数即可绕过 |
+| 对话**每一条**都失败，返回 `400 {"error":"prompt + max_tokens exceeds n_ctx"}` | **这是 dsh 侧路由声明与启动参数对不上**，不是模型坏了。kvmem 那个独立 server 会把 `prompt + max_tokens > n_ctx` 判成硬错误（上游 llama.cpp 只会 warning 后自行收敛），而报错里**既没有 prompt 长度也没有 n_ctx**。最常见的成因是 `settings.yaml` 里**手写**的路由把 `contextWindow` / `maxTokens` 填得比实际 `-c` 大（实测：声明 `maxTokens: 128000`、实际 `-c 32768`，于是 `128000 > 32768` 恒成立，每条消息必失败）。三步解决：① 看**设置 → 本地模型 → 上下文长度**（或插件日志里「已拉起：… `-c` N」那一行）拿到真实 `n_ctx`；② 把该模型的 `contextWindow` 改成这个值、`maxTokens` 改成它的 1/4 左右（例如 32768 / 8192）；③ **0.6.0+ 已经内置兜底**：`guardContextOverflow`（默认开）会预防性压掉必然失败的超大上限，并在服务端拒绝后逐级减半重试，日志里能看到「已把输出上限从 X 压到 Y 后重试」 |
+| 模型「话说一半就停了」/ 每次回复都特别短（明明没到上下文上限） | 看 **设置 → 本地模型 → KVMem 分块缓存 → 解码预留（`--kvmem-gen-reserve`）**。它是 kvmem 里**单次生成的上限**（含思考），而这个构建的默认值只有 **256** —— 不设置它，每次回复最多只能写 256 个 token，且**不会有任何报错**。把它设成不小于「单次最大输出 tokens」（例如 8192～16384）。加载日志里有一条专门的提醒，看到「解码预留…当前为 256」就是这个问题 |
+| 想调 KVMem 的分块检索（budget / 块大小 / 检索算法 / NVMe 溢场…） | 0.6.0+ 在设置页新增了「**KVMem 分块缓存（kvmem 分支专有）**」整组，共 18 项，对应 `--kvmem-*` 家族；另有「多 Token 预测（MTP）细节」组（`--spec-kv-dtype` / `--spec-draft-n-max` / `--spec-draft-p-min`）。**整组默认值都是「不下发」**（数字项填 `-1`、字符串留空），不动它们就等于用构建自己的默认行为。这些是 kvmem 分支专有参数，官方 llama.cpp 构建上会被整体跳过并在日志里说明 |
 | 想知道「我的 llama.cpp 会不会接受插件下发的参数」 | 跑 `npm run verify:llama`。它会读你的实际配置、拼出参数、真的起一次 llama-server（把模型换成不存在的哨兵路径，因此不会占显存），并给出通过/失败与完整命令行 |
 | 请求返回 503「还没有选择本地模型」 | 去 **设置 → 本地模型** 选模型；模型要放在 `modelsDir` 下 |
 | 503「没有找到 llama-server 可执行文件」 | 错误信息里会列出查找过的三个位置；用 `scripts/fetch-llama.mjs` 或手填 `llamaServerPath` |
@@ -714,10 +748,11 @@ disabled ──启用──▶ idle ──首条对话──▶ starting ──�
 | 模型看不到工具、不调用工具 | 检查 `jinja=true`；再试 `chatTemplate=chatml` 或指定模板文件 |
 | 切了「启用思考 / 保留历史 think」但输出没变化 | 两条前提：① llama.cpp 要支持请求体里的 `chat_template_kwargs`（2025-06 之后的构建，旧构建会忽略该字段，表现为开关无效）；② 模型模板要认 `enable_thinking` / `preserve_thinking`（带思维链的模板如 Qwen3 / Qwen3.6 才认）。`logLevel=debug` 会把「未能改写请求体」的原因打出来 |
 | 加载失败，日志里出现 `failed to load mmproj` / `clip_model_load` | 视觉投影文件与模型不配套，或路径不对。去 **设置 → 本地模型 → 视觉投影文件**，把选项恢复成「自动」让插件重新按同目录关联；纯文本模型保持「自动」即可 |
-| 开了 MTP 之后，视觉投影设置变成了灰色 / 状态卡说「视觉投影已被 MTP 顶掉」 | 这是**设计行为**，不是故障：MTP 与图像输入在 llama.cpp 里不能共存。要图像输入就关掉 MTP；要 MTP 就保持视觉投影空着。你选的 `mmprojFile` 没被清空，关掉 MTP 即恢复生效（见第 4 节「多 Token 预测（MTP）」） |
+| 对话框报 `400 "Failed to load image or audio file"`，而**同一批里有些图又能正常识别** | 失败的是 **WebP** 图片。dsh 转码时会产出 WebP 与 JPEG 两种（实测 `request-images/` 下两种都有），而 llama.cpp 内置的图像解码器**不认识 WebP** —— 它需要外部的 `ffprobe` + `ffmpeg` 来转码，而这两个是从 **PATH** 里找的（这个构建砍掉了 `--ffmpeg-path`）。判断方法：看插件日志（`logLevel=debug`）里有没有 `probe: failed to launch ffprobe` / `failed to decode webp buffer`。修法：`winget install Gyan.FFmpeg`。**0.7.0 起插件会自动找到 ffmpeg 并把它的目录前置进 llama-server 子进程的 PATH**（装完立刻生效，不必改系统 PATH、也不必为此重启 dsh）；找不到而你又开着视觉投影时，加载日志里会有一条说清「哪个格式会失败、为什么只有它、怎么修」的警告 |
+| 开了 MTP 之后，视觉投影设置变成了灰色 / 状态卡说「视觉投影已被 MTP 顶掉」 | **0.7.0 起默认不会再发生**：MTP 与视觉投影现在可以共存（`mtpWithVision` 默认开启，kvmem 分支实测支持同时加载视觉头与 MTP 草稿上下文）。看到它变灰只说明你把这个开关**关掉**了 —— 那时恢复旧的互斥行为（上游 llama.cpp 需要这样）。想同时用 MTP 和看图就把它打开；你选的 `mmprojFile` 不会被清空（见第 4 节「多 Token 预测（MTP）」） |
 | 开了 MTP，但生成速度没有任何变化 | 两条前提没同时满足：① 模型必须是**带 MTP 头的 GGUF**（文件名常带 `MTP` 字样），普通 GGUF 打开开关**零效果且不报错**；② llama.cpp 构建要支持 MTP（2026-05 之后的 PR #22673）。先看模型文件名，再看构建日期。另外草稿深度用默认值即可，调得过大反而更慢 |
 | 加载失败，日志里出现 `unknown argument: --spec-type` / `--spec-type: invalid value` | 这个 llama.cpp 构建不支持 MTP（早于 2026-05），或该构建只认别的取值。升级 llama.cpp；插件在启动前会通过 `--help` 探测并打一条「不认识这个选项」的警告，看到警告就说明是这个原因 |
-| 加载失败，同时出现 MTP 与 mmproj 相关字样 | 说明命令行里同时下发了 `--spec-type` 和 `--mmproj` —— 0.3.1 的拼装层不会产生这种组合，所以要么是你在「附加参数」里手写了其中一个、要么是旧版本。检查 **设置 → 本地模型 → 附加参数**，删掉手写的 `--mmproj` 或 `--spec-type` |
+| 加载失败，日志里同时出现 MTP 与 mmproj 相关字样 | 说明命令行里同时下发了 `--spec-type` 和 `--mmproj`。**0.7.0 起这是默认行为**（kvmem 分支的 `llama-kvmem-server` 支持共存，实测两者同时加载没有问题）；如果你换回了**官方 llama.cpp**，它会因此加载失败 —— 把「MTP 与视觉共存」（`mtpWithVision`）关掉即恢复互斥。另外顺手检查 **设置 → 本地模型 → 附加参数** 里有没有手写这两个参数（会和插件下发的重复） |
 | 升级到 0.4.0 后生成风格变了（更保守 / 更容易重复 / 候选更单调） | **这是预期内的**：新增的 8 个采样参数每次加载都会显式下发，并覆盖 llama.cpp 自身默认值 —— `temp` 0.8→0.75、`top-k` 40→20、`min-p` 0.05→0、`repeat-penalty` 1.1→1.0。想退回原样，去 **设置 → 本地模型 → 采样与 KV 缓存** 把这些值填成 llama.cpp 的默认值（见第 4 节的对照表） |
 | 对话框里的「推理等级」拨哪个档位都没反应 | 先看 **设置 → 本地模型** 状态卡里的「推理档位」和日志里的「模型模板支持的推理档位」：解析不出档位表，插件就只会按开关控制思考与否，不碰档位。解析出来了还不行，就是模型模板没定义你选的那一档 —— 换个档位试试 |
 | 对话直接报 500，错误里有 `Unexpected reasoning effort xxx` | 模型模板不认这个档位值。`0.4.2` 起插件会读模板、按它支持的档位重映射，正常不会再出现；若仍出现，把日志里「模型模板支持的推理档位」那一行发出来 |

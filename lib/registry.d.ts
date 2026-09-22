@@ -63,11 +63,16 @@ export declare function resolveVisionProjector(modelsDir: string, selected: stri
  * 界面显示与命令行下发必须走同一个函数，否则会出现「面板上写着启用了视觉投影、
  * 实际命令行里却没有 --mmproj」这种无从排查的错位（本插件在 --flash-attn 上吃过一次同样的亏）。
  * 互斥的**权威**落点仍在 llama/args.ts 的拼参数层，这里只是让显示跟上那个事实。
+ *
+ * `mtpWithVision`（2026-09-21 起）：互斥**只在上游 llama.cpp 上成立**。
+ * kvmem 分支的 llama-kvmem-server 实测可以同时加载视觉头与 MTP 草稿上下文，
+ * 所以默认（true）两者并存；只有把它关掉时才退回旧的「MTP 顶掉视觉」行为。
  */
 export declare function effectiveVisionProjector(options: {
     modelsDir: string;
     mmprojFile: string;
     autoMmproj: string | null;
     mtp: boolean;
+    mtpWithVision?: boolean;
 }): string;
 export declare function formatBytes(bytes: number): string;

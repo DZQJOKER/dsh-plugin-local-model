@@ -46,6 +46,81 @@ export interface LlamaServerArgInput {
   kvUnified: boolean
   /** --kv-stream-stage-mib；0 = 不下发。 */
   kvStreamStageMib: number
+  /**
+   * 服务端默认输出上限（-n / --n-predict）。负数 = 不下发。
+   *
+   * 与配置里的 `maxTokens` 不是一回事：那个是 dsh 路由声明、最终体现为**每次请求**的
+   * `max_tokens`；这个是**没带 max_tokens 的请求**的兜底上限。kvmem 那个独立 server 上
+   * 它默认是 128，小得离谱 —— 任何绕过 dsh 的调用（curl、脚本、别的客户端）都只会吐 128 个 token。
+   */
+  nPredict: number
+  /** 权重加载方式（-lm / --load-mode）：auto|none|mmap|mlock|mmap+mlock|dio。空串 = 不下发。 */
+  loadMode: string
+  /** 频率惩罚（--frequency-penalty）；0 = 不下发（0 即不惩罚，与构建默认一致）。 */
+  frequencyPenalty: number
+  /** MTP 草稿的 K/V 精度（--spec-kv-dtype）。空串 = 不下发。 */
+  specKvDtype: string
+  /** MTP 单次草稿 token 数（--spec-draft-n-max）。负数 = 不下发。 */
+  specDraftNMax: number
+  /** MTP 草稿最小接受概率（--spec-draft-p-min）。负数 = 不下发。 */
+  specDraftPMin: number
+  /** GPU KV 缓存类型（--kv-dtype，kvmem 分支的合并写法，一次设 K 和 V）。空串 = 不下发。 */
+  kvDtype: string
+  /** 视觉编码器放 GPU（true = 构造默认，不下发；false = 下发 --no-mmproj-offload 放 CPU）。 */
+  mmprojOffload: boolean
+  /** 模板文件路径（--chat-template-file）。空串 = 不下发。 */
+  chatTemplateFile: string
+  /** 模板默认参数（--chat-template-kwargs，JSON 文本）。空串 = 不下发。 */
+  chatTemplateKwargs: string
+  /** 服务端默认推理档位（--reasoning-effort）。空串 = 不下发。 */
+  reasoningEffort: string
+  /** 预算耗尽时注入的过渡语（--reasoning-budget-message）。空串 = 不下发。 */
+  reasoningBudgetMessage: string
+
+  // ── KVMem 分块 KV 检索（kvmem/kvmem-llama.cpp 分支专有）────────────────────
+  /**
+   * 是否启用 KVMem（true = 构建默认，不下发；false = 下发 --no-kvmem 退回普通 KV 缓存）。
+   */
+  kvmemEnabled: boolean
+  /** GPU 工作集 token 数（--kvmem-budget）。负数 = 不下发（构建默认 0 = 等于 n_ctx）。 */
+  kvmemBudget: number
+  /**
+   * 解码预留（--kvmem-gen-reserve）：**单次生成的上限**（含思考）。
+   *
+   * 🔴 这个构建的默认值只有 256 —— 也就是说不开这一项，每次回复最多只能生成 256 个 token。
+   * 负数 = 不下发。
+   */
+  kvmemGenReserve: number
+  /** 检索块大小（--kvmem-block-tokens）。负数 = 不下发。 */
+  kvmemBlockTokens: number
+  /** 常驻前缀 token 数（--kvmem-sink-tokens）。负数 = 不下发。 */
+  kvmemSinkTokens: number
+  /** 常驻后缀 token 数（--kvmem-recent-tokens）。负数 = 不下发。 */
+  kvmemRecentTokens: number
+  /** 选择算法：recency | retrieval（--kvmem-method）。空串 = 不下发。 */
+  kvmemMethod: string
+  /** 检索查询取提示词末尾多少 token（--kvmem-query-last）。负数 = 不下发。 */
+  kvmemQueryLast: number
+  /** 检索查询的上限 token 数（--kvmem-query-max-tokens）。负数 = 不下发。 */
+  kvmemQueryMaxTokens: number
+  /** 查询重放模式：legacy | auto（--kvmem-query-replay）。空串 = 不下发。 */
+  kvmemQueryReplay: string
+  /** 查询策略：legacy | user（--kvmem-query-policy）。空串 = 不下发。 */
+  kvmemQueryPolicy: string
+  /** MTP 状态模式：snapshots | auto | replay（--kvmem-mtp-state）。空串 = 不下发。 */
+  kvmemMtpState: string
+  /** 槽池占显存的比例上限（--kvmem-gpu-ratio，如 0.8）。负数 = 不下发（构建默认 0.50）。 */
+  kvmemGpuRatio: number
+  /** CPU 溢出场大小 GiB（--kvmem-cpu-gb）。负数 = 不下发（构建默认 0 = 关闭）。 */
+  kvmemCpuGb: number
+  /** NVMe 溢出场大小 GiB（--kvmem-nvme-gb）。负数 = 不下发（构建默认 0 = 关闭）。 */
+  kvmemNvmeGb: number
+  /** NVMe 溢出场目录（--kvmem-nvme-dir）。空串 = 不下发。 */
+  kvmemNvmeDir: string
+  /** 用原始 K 预填 V 到主机内存（--kvmem-harvest-v，裸开关）。 */
+  kvmemHarvestV: boolean
+  /** 把原始 K 与 V 落到 NVMe（--kvmem-raw-k-nvme，需要 --kvmem-nvme-gb）。 */
+  kvmemRawKNvme: boolean
   /** 采样参数：全部按配置显式下发（它们的默认值就是用户指定的值）。 */
   temp: number
   topK: number
@@ -80,10 +155,16 @@ export interface LlamaServerArgInput {
   /**
    * 多 Token 预测（MTP）：下发 `--spec-type draft-mtp`。
    *
-   * 与 `mmproj` **互斥** —— 互斥由本文件的拼参数层强制保证（见 buildLlamaServerArgs），
-   * 调用方即使两个都传了，也不可能拼出一条让 llama-server 加载失败的命令行。
+   * 与 `mmproj` 的关系由 `mtpWithVision` 决定 —— 上游 llama.cpp 里两者不能共存，
+   * 但 kvmem 分支的 llama-kvmem-server 可以（本机实测同时加载成功）。
    */
   mtp: boolean
+  /**
+   * 允许 MTP 与视觉投影同时下发（默认开）。
+   *
+   * 关掉时恢复旧的互斥行为：MTP 生效、`--mmproj` 被忽略并给出说明。
+   */
+  mtpWithVision: boolean
   mmap: boolean
   mlock: boolean
   apiKey: string
@@ -382,29 +463,50 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
   // 0 是有意义的取值（关掉思考），所以不按「> 0」判断，只在构建支持时才下发。
   gateStrict('--reasoning-budget', String(Math.round(input.reasoningBudget)))
 
-  // 两本账合成一条提示：被跳过的可能既有「只有新构建才有的」（strict）也有
-  // 「这个分支干脆没有的」（loose），但对用户是同一件事 —— 哪几个选项没发出去。
-  const notRecognized = [...skipped, ...dropped]
-  if (notRecognized.length > 0) {
-    notices.push(
-      input.knownFlags
-        ? `这个 llama-server 不认识以下选项，已跳过（不影响加载）：${notRecognized.join('、')}`
-        : `无法探测这个 llama-server 支持哪些选项，已跳过：${notRecognized.join('、')}（宁可退回构建默认值，也不赌它认）`,
-    )
-  }
+  // 两本账（skipped / dropped）在这里**还不能**结算成提示：下面还有一批选项要下发，
+  // 它们同样会往这两本账里记东西。结算统一放在函数末尾（紧挨着 extraArgs 之前），
+  // 否则「新增的选项被跳过」就会悄无声息 —— 实测就是这么漏掉一批 --kvmem-* 的。
 
   if (input.jinja) gateLoose('--jinja')
   if (input.chatTemplate.trim()) gateLoose('--chat-template', input.chatTemplate.trim())
 
-  // MTP 与视觉投影互斥 —— 这条规则实现在这里而不是调用方，是因为这里才是
-  // 「参数真正被拼出来的地方」：只要 mtp 为真，mmproj 就绝不可能漏下去。
+  /**
+   * MTP 与视觉投影的关系。决策点必须在这一层（参数真正被拼出来的地方），
+   * 调用方怎么传都不可能拼出一条自相矛盾的命令行。
+   *
+   * 事实基础（本机实测，2026-09-21）：**kvmem 分支的 llama-kvmem-server 两者可以共存** ——
+   * 同时给 `--mmproj` 与 `--spec-type draft-mtp` 时，
+   *   `clip_model_loader: has vision encoder` 与 `creating MTP draft context` 同时出现，
+   *   服务正常起来，看图对话也能识别。
+   * 而**上游 llama.cpp** 不许这样组合（会加载失败），所以那一侧的用户要把
+   * 「MTP 与视觉共存」关掉 —— 关掉后恢复旧的互斥：MTP 生效、mmproj 被忽略。
+   *
+   * 默认走共存（kvmem 是这一侧的主流构建），但那条「已同时下发」的说明保留 ——
+   * 换回官方构建时用户就是靠它知道该去关哪个开关。
+   */
   const mmproj = input.mmproj.trim()
   if (input.mtp) {
     gateLoose('--spec-type', 'draft-mtp')
     if (mmproj) {
-      notices.push(
-        '已开启 MTP，视觉投影文件（--mmproj）被自动忽略：llama.cpp 的 MTP 与图像输入不能同时使用',
-      )
+      /*
+       * 判据写成 `!== false` 而不是 `if (input.mtpWithVision)`：
+       * 「没给这个字段」必须和 registry 那侧的 `=== false` 判据**同义**，
+       * 否则会出现「面板显示启用了视觉、命令行里却没有」的错位 ——
+       * 这正是本插件在 --flash-attn 上吃过一次的那类 bug（两处默认值各说各话）。
+       */
+      if (input.mtpWithVision !== false) {
+        gateLoose('--mmproj', mmproj)
+        notices.push(
+          '已同时下发 --spec-type draft-mtp 与 --mmproj（「MTP 与视觉共存」为开）。' +
+            'kvmem 分支的 llama-kvmem-server 实测支持这种组合；' +
+            '若你换回官方 llama.cpp 并在加载时看到错误，把「MTP 与视觉共存」关掉即可恢复互斥。',
+        )
+      } else {
+        notices.push(
+          '已开启 MTP，视觉投影文件（--mmproj）被忽略：官方 llama.cpp 的 MTP 与图像输入不能同时下发。' +
+            '如果你的构建支持共存（kvmem 分支的 llama-kvmem-server 可以），把「MTP 与视觉共存」打开。',
+        )
+      }
     }
   } else if (mmproj) {
     gateLoose('--mmproj', mmproj)
@@ -413,6 +515,114 @@ export function buildLlamaServerArgs(input: LlamaServerArgInput): BuiltLlamaArgs
   if (!input.mmap) gateLoose('--no-mmap')
   if (input.mlock) gateLoose('--mlock')
   if (input.apiKey.trim()) gateLoose('--api-key', input.apiKey.trim())
+
+  // ── 输出上限与加载方式 ───────────────────────────────────────────────────
+  /**
+   * 数值选项的统一入口：**负数一律不下发**。
+   *
+   * `-1` 在本插件里从此是一个约定的「沿用构建默认」哨兵，理由与 --seed 完全相同：
+   * 这些选项的 0 往往是有意义的取值（`--kvmem-budget 0` = 取 n_ctx、
+   * `--kvmem-cpu-gb 0` = 关闭溢出场），所以「0 = 不下发」这套约定在这里不成立，
+   * 必须换一个不可能被合法赋值的哨兵。负数在它们的取值域里全部非法。
+   */
+  const gateNumber = (
+    gate: (...tokens: string[]) => boolean,
+    name: string,
+    value: number,
+    format: (n: number) => string = (n) => String(Math.round(n)),
+  ): boolean => {
+    if (!Number.isFinite(value) || value < 0) return false
+    return gate(name, format(value))
+  }
+
+  gateNumber(gateLoose, '-n', input.nPredict)
+  if (input.loadMode.trim()) gateLoose('-lm', input.loadMode.trim())
+
+  // ── KVMem 分块 KV 检索 ───────────────────────────────────────────────────
+  // 全部走**严格**门控：这是 kvmem/kvmem-llama.cpp 分支专有的参数族，上游 llama.cpp
+  // 一个都不认识 —— 探不到就绝不下发。探测失败时宁可退回构建默认，也不能赌它认。
+  if (!input.kvmemEnabled) gateStrict('--no-kvmem')
+  gateNumber(gateStrict, '--kvmem-budget', input.kvmemBudget)
+  gateNumber(gateStrict, '--kvmem-gen-reserve', input.kvmemGenReserve)
+  gateNumber(gateStrict, '--kvmem-block-tokens', input.kvmemBlockTokens)
+  gateNumber(gateStrict, '--kvmem-sink-tokens', input.kvmemSinkTokens)
+  gateNumber(gateStrict, '--kvmem-recent-tokens', input.kvmemRecentTokens)
+  if (input.kvmemMethod.trim()) gateStrict('--kvmem-method', input.kvmemMethod.trim())
+  gateNumber(gateStrict, '--kvmem-query-last', input.kvmemQueryLast)
+  gateNumber(gateStrict, '--kvmem-query-max-tokens', input.kvmemQueryMaxTokens)
+  if (input.kvmemQueryReplay.trim()) gateStrict('--kvmem-query-replay', input.kvmemQueryReplay.trim())
+  if (input.kvmemQueryPolicy.trim()) gateStrict('--kvmem-query-policy', input.kvmemQueryPolicy.trim())
+  if (input.kvmemMtpState.trim()) gateStrict('--kvmem-mtp-state', input.kvmemMtpState.trim())
+  gateNumber(gateStrict, '--kvmem-gpu-ratio', input.kvmemGpuRatio, formatNumber)
+  gateNumber(gateStrict, '--kvmem-cpu-gb', input.kvmemCpuGb, formatNumber)
+  gateNumber(gateStrict, '--kvmem-nvme-gb', input.kvmemNvmeGb, formatNumber)
+  if (input.kvmemNvmeDir.trim()) gateStrict('--kvmem-nvme-dir', input.kvmemNvmeDir.trim())
+  if (input.kvmemHarvestV) gateStrict('--kvmem-harvest-v')
+  if (input.kvmemRawKNvme) gateStrict('--kvmem-raw-k-nvme')
+
+  /**
+   * 解码预留（--kvmem-gen-reserve）的两次提醒。
+   *
+   * 这个构建的默认值只有 **256** —— 而它同时是**单次生成的上限**（含思考）。
+   * 也就是说「不设置它」等于「每次回复最多 256 个 token」，一个足以让人以为模型坏了的坑，
+   * 而且完全没有报错。所以：
+   *   - 用户填了但填得过小 → 直接说出后果；
+   *   - 用户没填、而这个构建确实有这个选项 → 说明「即将沿用 256」。
+   * 只在构建认得这个选项时才提醒，上游构建不会看到这条噪音。
+   */
+  const genReserveSupported = input.knownFlags?.has('--kvmem-gen-reserve') ?? false
+  if (genReserveSupported) {
+    const effective = input.kvmemGenReserve >= 0 ? Math.round(input.kvmemGenReserve) : 256
+    if (effective < 1024) {
+      notices.push(
+        `解码预留（--kvmem-gen-reserve）当前为 ${effective}，而它是**单次生成的上限**（含思考）—— ` +
+          '模型每次回复最多只能写这么多 token，长回答会被硬截断且不报错。' +
+          '建议设成不小于 dsh 路由的「单次最大输出 tokens」（例如 8192～16384）。',
+      )
+    }
+  }
+
+  // ── KV 类型与 MTP 细节 ───────────────────────────────────────────────────
+  if (input.kvDtype.trim()) gateStrict('--kv-dtype', input.kvDtype.trim())
+  if (input.specKvDtype.trim()) gateLoose('--spec-kv-dtype', input.specKvDtype.trim())
+  gateNumber(gateLoose, '--spec-draft-n-max', input.specDraftNMax)
+  gateNumber(gateLoose, '--spec-draft-p-min', input.specDraftPMin, formatNumber)
+
+  // --kv-dtype 一次设 K 和 V，与 -ctk / -ctv 是两条并行的通道；同时给会让「谁生效」
+  // 取决于构建内部的读取顺序（无法从外面判断），所以只提醒、不替用户裁决。
+  if (input.kvDtype.trim() && (normalizeCacheType(input.cacheTypeK) !== 'auto' || normalizeCacheType(input.cacheTypeV) !== 'auto')) {
+    notices.push(
+      '「KV 缓存类型（合并）」与「KV cache 精度（K/V）」同时设置了：前者对应 --kv-dtype、' +
+        '后者对应 -ctk/-ctv，两者作用重叠，生效顺序由构建内部决定。建议只留一个。',
+    )
+  }
+
+  // ── 模板、推理档位与其它 ─────────────────────────────────────────────────
+  if (!input.mmprojOffload) gateLoose('--no-mmproj-offload')
+  if (input.chatTemplateFile.trim()) gateLoose('--chat-template-file', input.chatTemplateFile.trim())
+  if (input.chatTemplateKwargs.trim()) gateLoose('--chat-template-kwargs', input.chatTemplateKwargs.trim())
+  if (input.reasoningEffort.trim()) gateLoose('--reasoning-effort', input.reasoningEffort.trim())
+  if (input.reasoningBudgetMessage.trim()) gateLoose('--reasoning-budget-message', input.reasoningBudgetMessage.trim())
+  // 0 就是不惩罚，与构建默认值一致，下发它没有任何信息量 —— 只在非 0 时下发。
+  if (Math.round(input.frequencyPenalty ?? 0) !== 0) {
+    gateLoose('--frequency-penalty', formatNumber(input.frequencyPenalty))
+  }
+
+  // ── 被跳过选项的结算（必须是最后一步）────────────────────────────────────
+  // 两本账合成一条提示：被跳过的可能既有「只有较新构建才有的」（strict）也有
+  // 「这个分支干脆没有的」（loose），但对用户是同一件事 —— 哪几个选项没发出去。
+  //
+  // 位置很关键：这个循环必须在**所有**下发决策之后跑完。它曾经放在采样参数后面，
+  // 于是后面新增的每一项（--kvmem-*、-n、-lm、--kv-dtype……）被跳过后都不会出现在
+  // 提示里 —— 用户看到的是「设置填了但没生效，日志里也没有任何线索」。
+  const notRecognized = [...skipped, ...dropped]
+  if (notRecognized.length > 0) {
+    notices.push(
+      input.knownFlags
+        ? `这个 llama-server 不认识以下选项，已跳过（不影响加载）：${notRecognized.join('、')}`
+        : `无法探测这个 llama-server 支持哪些选项，已跳过：${notRecognized.join('、')}（宁可退回构建默认值，也不赌它认）`,
+    )
+  }
 
   args.push(...splitArgs(input.extraArgs))
 

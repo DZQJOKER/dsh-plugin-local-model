@@ -400,7 +400,52 @@ window.__ModuleLoader__.load({
 		  notice: { border: `1px solid ${SUCCESS}`, color: SUCCESS, background: `color-mix(in srgb, ${SUCCESS} 8%, transparent)` },
 		  /** 警告（橙）：与状态徽章里的 starting/stopping 同色，表示「能跑但要注意」。 */
 		  warn: { border: `1px solid ${WARN}`, color: c("--dsw-alias-state-warn-label", "#9a6209"), background: `color-mix(in srgb, ${WARN} 8%, transparent)` },
-		  hint: { border: `1px solid ${BORDER_2}`, opacity: 0.85 }
+		  hint: { border: `1px solid ${BORDER_2}`, opacity: 0.85 },
+		  // ── 「本次启动参数」面板（设置页最顶部）────────────────────────────────────
+		  /**
+		   * 代码块**横竖都可滚**，不换行。
+		   *
+		   * `whiteSpace: 'pre'` + `overflowX: 'auto'` 是刻意的：命令行的每一项都要能一眼看出
+		   * 「哪一项配哪个值」，一旦自动换行，`--kvmem-budget` 和它的数字就会被拆到两行上去。
+		   * `maxHeight` 则保证几十项参数也不会把下面的设置项挤出视口。
+		   */
+		  codeBlock: {
+		    fontFamily: "var(--font-mono, ui-monospace, monospace)",
+		    fontSize: 11,
+		    lineHeight: 1.7,
+		    margin: 0,
+		    padding: "10px 12px",
+		    borderRadius: 8,
+		    border: `1px solid ${BORDER_2}`,
+		    background: SURFACE_RAISED,
+		    color: LABEL,
+		    overflow: "auto",
+		    maxHeight: 280,
+		    whiteSpace: "pre",
+		    minWidth: 0
+		  },
+		  /** 参数摘要：两列网格，窄屏也压得住（列宽 `minmax(0, 1fr)`，裸 `1fr` 会拒绝压缩）。 */
+		  factGrid: {
+		    display: "grid",
+		    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+		    gap: "10px 16px",
+		    margin: "12px 0 0",
+		    minWidth: 0
+		  },
+		  factCell: { display: "flex", flexDirection: "column", gap: 1, minWidth: 0 },
+		  factLabel: { fontSize: 11, opacity: 0.6, minWidth: 0 },
+		  factValue: {
+		    fontFamily: "var(--font-mono, ui-monospace, monospace)",
+		    fontSize: 11.5,
+		    wordBreak: "break-all",
+		    minWidth: 0
+		  },
+		  factNote: { fontSize: 10.5, opacity: 0.55, lineHeight: 1.45 },
+		  /** 面板顶部的小标题（「本次启动参数」「参数摘要」这种）。 */
+		  subTitle: { fontSize: 12.5, fontWeight: 500, margin: "0 0 8px" },
+		  /** 面板右上角的工具行（复制按钮 + 时间）。 */
+		  panelHead: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10, minWidth: 0 },
+		  panelHeadSpacer: { flex: "1 1 auto", minWidth: 0 }
 		};
 		var pair = (fg) => ({
 		  fg,
@@ -711,6 +756,7 @@ window.__ModuleLoader__.load({
 		    notice ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.notice }, children: notice }) : null,
 		    runtimeState === "disabled" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.hint }, children: "总开关已关闭：不会监听端口，也不会拉起任何进程。" }) : null,
 		    state.runtime.visionDisabledByMtp ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.warn }, children: state.runtime.visionDisabledByMtp }) : null,
+		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(LaunchPanel, { launch: state.runtime.launch, loadedAt: state.runtime.loadedAt }),
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
 		      PresetBar,
 		      {
@@ -881,6 +927,75 @@ window.__ModuleLoader__.load({
 		      ),
 		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.dirty, children: dirtyCount > 0 ? `有 ${dirtyCount} 项未保存` : "没有未保存的修改" })
 		    ] })
+		  ] });
+		}
+		function LaunchPanel({ launch, loadedAt }) {
+		  const [copied, setCopied] = (0, import_react2.useState)("");
+		  const lines = Array.isArray(launch?.lines) ? launch.lines : [];
+		  const facts = Array.isArray(launch?.facts) ? launch.facts : [];
+		  const notices = Array.isArray(launch?.notices) ? launch.notices : [];
+		  const unrecognized = Array.isArray(launch?.unrecognized) ? launch.unrecognized : [];
+		  if (lines.length === 0) {
+		    return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.card, children: [
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.subTitle, children: "本次启动参数" }),
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.groupHint, children: "模型尚未加载。加载完成后，这里会列出本次**真正下发给 llama-server** 的全部参数。" })
+		    ] });
+		  }
+		  const groups = [];
+		  for (const fact of facts) {
+		    let group = groups.find((item) => item.name === fact.group);
+		    if (!group) {
+		      group = { name: fact.group, items: [] };
+		      groups.push(group);
+		    }
+		    group.items.push(fact);
+		  }
+		  const when = loadedAt ? new Date(loadedAt).toLocaleTimeString() : "";
+		  const copy = () => {
+		    const text = launch.commandLine ?? lines.join("\n");
+		    const done = (ok) => {
+		      setCopied(ok ? "已复制" : "复制失败");
+		      setTimeout(() => setCopied(""), 1500);
+		    };
+		    try {
+		      const pending = navigator.clipboard?.writeText(text);
+		      if (pending && typeof pending.then === "function") pending.then(() => done(true), () => done(false));
+		      else done(false);
+		    } catch {
+		      done(false);
+		    }
+		  };
+		  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.card, children: [
+		    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.panelHead, children: [
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("p", { style: { ...S.subTitle, margin: 0 }, children: [
+		        "本次启动参数",
+		        when ? ` · ${when}` : "",
+		        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { ...S.factNote, marginLeft: 8 }, children: "（服务器实际收到的全部参数）" })
+		      ] }),
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.panelHeadSpacer }),
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { style: S.button, onClick: copy, children: copied || "复制命令行" })
+		    ] }),
+		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("pre", { style: S.codeBlock, children: lines.join("\n") }),
+		    groups.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: S.factGrid, children: groups.flatMap((group) => [
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+		        "div",
+		        {
+		          style: { ...S.factLabel, gridColumn: "1 / -1", marginTop: 4, fontWeight: 500 },
+		          children: group.name
+		        },
+		        `group-${group.name}`
+		      ),
+		      ...group.items.map((fact, index) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.factCell, children: [
+		        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.factLabel, children: fact.label }),
+		        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.factValue, children: fact.value }),
+		        fact.note ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.factNote, children: fact.note }) : null
+		      ] }, `${group.name}-${index}`))
+		    ]) }) : null,
+		    notices.map((text, index) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.hint, marginTop: 12, marginBottom: 0 }, children: text }, `notice-${index}`)),
+		    unrecognized.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { ...S.banner, ...S.warn, marginTop: 12, marginBottom: 0 }, children: [
+		      "这几个选项不在识别表里（可能来自「附加参数」）：",
+		      unrecognized.join("、")
+		    ] }) : null
 		  ] });
 		}
 		function Field({ field, value, models, visionFiles, overridden, invalid, mtp, onChange, onRevert }) {

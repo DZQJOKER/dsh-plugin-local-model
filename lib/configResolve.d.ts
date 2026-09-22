@@ -52,9 +52,35 @@ export declare function normalizeBool(value: unknown, fallback: boolean): boolea
 export declare function logLevelOf(value: string | undefined): LogLevel;
 export declare function isAutoUnloadDisabled(minutes: number): boolean;
 /**
- * 把用户配置收敛成一份可用的运行配置：
+ * 字符串枚举收敛：不在白名单里的一律回落到 fallback（通常是空串 = 不下发）。
+ *
+ * 为什么必须有这一层：这些值是**直接拼进子进程命令行**的，而命令行里一个拼错的取值
+ * 不是「被忽略」，而是让整个服务起不来（`invalid --kvmem-method: xxxx` + exit 1）。
+ * 写入门（configStore）只按类型放行、不认取值，所以唯一的收敛点就是这里。
+ *
+ * 空串永远是合法取值：在本插件里它表示「不下发这一项」。
+ */
+export declare function normalizeChoice<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T;
+/** 把用户配置收敛成一份可用的运行配置：
  * - 缺字段用默认值兜底；
  * - 目录一律解析成绝对路径，相对路径相对 $DSH_HOME 而不是进程 cwd（cwd 会随启动方式漂移）；
  * - 数值做区间收敛，避免把互相矛盾的参数丢给 llama-server。
  */
 export declare function resolveConfig(input: Partial<LocalModelConfig> | undefined, env?: NodeJS.ProcessEnv): ResolvedConfig;
+/**
+ * 加载前的配置一致性检查：把「两个数字对不上」这类**一定会出问题**的组合提前说出来。
+ *
+ * 为什么值得单独做一层：这些数字分散在三个地方（dsh 路由声明、llama-server 启动参数、
+ * kvmem 的解码预留），任何两处对不上都不会在加载时报错，而是等到某次对话才以一条
+ * 难以解读的服务端错误冒出来。实测那一次就是这样 —— 路由里声明 maxTokens=128000、
+ * 服务端却以 -c 32768 启动，于是**每一条**消息都 400，而报错里只有
+ * `prompt + max_tokens exceeds n_ctx`，既没给 prompt 长度也没给 n_ctx。
+ *
+ * 只返回文字，不擅自改配置：这三个数字的取舍（省显存 / 要长回答 / 要多长上下文）
+ * 是用户自己的决定，插件该做的是把后果讲清楚。纯函数，便于单测。
+ */
+export declare function consistencyNotices(config: {
+    ctxSize: number;
+    maxTokens: number;
+    kvmemGenReserve: number;
+}): string[];

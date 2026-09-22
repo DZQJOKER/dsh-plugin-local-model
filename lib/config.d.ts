@@ -12,10 +12,20 @@ export interface LocalModelConfig {
     /** 手动指定的视觉投影文件（mmproj）；留空 = 沿用同目录的自动关联。 */
     mmprojFile: string;
     /**
-     * 多 Token 预测（MTP）。开启后下发 `--spec-type draft-mtp`，
-     * 并**强制禁用视觉投影**（两者在 llama.cpp 里不能共存）。
+     * 多 Token 预测（MTP）。开启后下发 `--spec-type draft-mtp`。
+     *
+     * 与视觉投影的关系由 `mtpWithVision` 决定：上游 llama.cpp 里两者不能共存，
+     * 但 kvmem 那个独立 server 可以（本机实测：`clip_model_loader: has vision encoder`
+     * 与 `creating MTP draft context` 同时出现且服务正常）。
      */
     mtp: boolean;
+    /**
+     * MTP 与视觉投影**同时**下发（默认开启）。
+     *
+     * true = 两个都发。上游 llama.cpp 上这样会让服务端加载失败，所以那一侧要关掉本项；
+     * false = 保持旧的互斥行为（MTP 生效、`--mmproj` 被忽略并给出提示）。
+     */
+    mtpWithVision: boolean;
     preload: boolean;
     host: string;
     port: number;
@@ -51,6 +61,73 @@ export interface LocalModelConfig {
      * 插件因此按 `--help` 探测结果决定是否下发，不认识的构建上会被跳过。0 = 不下发。
      */
     kvStreamStageMib: number;
+    /** 是否启用 KVMem（--no-kvmem 关闭）。默认开启 = 不下发该参数。 */
+    kvmemEnabled: boolean;
+    /** GPU 工作集 token 数（--kvmem-budget）。-1 = 不下发（构建默认 0 = 等于 n_ctx）。 */
+    kvmemBudget: number;
+    /** 解码预留（--kvmem-gen-reserve）：**单次生成的上限**（含思考）。-1 = 不下发。 */
+    kvmemGenReserve: number;
+    /** 检索块大小（--kvmem-block-tokens）。-1 = 不下发。 */
+    kvmemBlockTokens: number;
+    /** 常驻前缀 token 数（--kvmem-sink-tokens）。-1 = 不下发。 */
+    kvmemSinkTokens: number;
+    /** 常驻后缀 token 数（--kvmem-recent-tokens）。-1 = 不下发。 */
+    kvmemRecentTokens: number;
+    /** 选择算法（--kvmem-method）：recency | retrieval。空串 = 不下发。 */
+    kvmemMethod: string;
+    /** 检索查询取提示词末尾多少 token（--kvmem-query-last）。-1 = 不下发。 */
+    kvmemQueryLast: number;
+    /** 检索查询的上限 token 数（--kvmem-query-max-tokens）。-1 = 不下发。 */
+    kvmemQueryMaxTokens: number;
+    /** 查询重放模式（--kvmem-query-replay）：legacy | auto。空串 = 不下发。 */
+    kvmemQueryReplay: string;
+    /** 查询策略（--kvmem-query-policy）：legacy | user。空串 = 不下发。 */
+    kvmemQueryPolicy: string;
+    /** MTP 状态模式（--kvmem-mtp-state）：snapshots | auto | replay。空串 = 不下发。 */
+    kvmemMtpState: string;
+    /** 槽池占显存比例上限（--kvmem-gpu-ratio，如 0.8）。-1 = 不下发。 */
+    kvmemGpuRatio: number;
+    /** CPU 溢出场 GiB（--kvmem-cpu-gb）。-1 = 不下发（构建默认 0 = 关闭）。 */
+    kvmemCpuGb: number;
+    /** NVMe 溢出场 GiB（--kvmem-nvme-gb）。-1 = 不下发（构建默认 0 = 关闭）。 */
+    kvmemNvmeGb: number;
+    /** NVMe 溢出场目录（--kvmem-nvme-dir）。空串 = 不下发。 */
+    kvmemNvmeDir: string;
+    /** 用原始 K 预填 V 到主机内存（--kvmem-harvest-v）。 */
+    kvmemHarvestV: boolean;
+    /** 原始 K 与 V 落 NVMe（--kvmem-raw-k-nvme，需 --kvmem-nvme-gb）。 */
+    kvmemRawKNvme: boolean;
+    /** 服务端默认输出上限（-n / --n-predict）。-1 = 不下发。 */
+    nPredict: number;
+    /** 权重加载方式（-lm / --load-mode）：auto|none|mmap|mlock|mmap+mlock|dio。空串 = 不下发。 */
+    loadMode: string;
+    /** GPU KV 缓存类型（--kv-dtype，一次设 K 和 V）。空串 = 不下发。 */
+    kvDtype: string;
+    /** MTP 草稿 K/V 精度（--spec-kv-dtype）。空串 = 不下发。 */
+    specKvDtype: string;
+    /** MTP 单次草稿 token 数（--spec-draft-n-max）。-1 = 不下发。 */
+    specDraftNMax: number;
+    /** MTP 草稿最小接受概率（--spec-draft-p-min）。-1 = 不下发。 */
+    specDraftPMin: number;
+    /** 频率惩罚（--frequency-penalty）。0 = 不下发。 */
+    frequencyPenalty: number;
+    /** 视觉编码器放 GPU；关闭时下发 --no-mmproj-offload。 */
+    mmprojOffload: boolean;
+    /** 模板文件路径（--chat-template-file）。空串 = 不下发。 */
+    chatTemplateFile: string;
+    /** 模板默认参数 JSON（--chat-template-kwargs）。空串 = 不下发。 */
+    chatTemplateKwargs: string;
+    /** 服务端默认推理档位（--reasoning-effort）。空串 = 不下发。 */
+    reasoningEffort: string;
+    /** 预算耗尽时的过渡语（--reasoning-budget-message）。空串 = 不下发。 */
+    reasoningBudgetMessage: string;
+    /**
+     * 输出上限溢出保护（默认开启）。
+     *
+     * 关掉它，`prompt + max_tokens > n_ctx` 的请求会原样撞到服务端 ——
+     * 上游 llama.cpp 只是打 warning 并自行收敛，kvmem 那个独立 server 则是**硬拒绝 400**。
+     */
+    guardContextOverflow: boolean;
     /** 温度（--temp）。越高越随机。llama.cpp 自身默认 0.8。 */
     temp: number;
     /** 仅从概率最高的 K 个 token 中采样（--top-k）。0 = 不过滤。llama.cpp 自身默认 40。 */
@@ -106,6 +183,7 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     selectedModel: string;
     mmprojFile: string;
     mtp: boolean;
+    mtpWithVision: boolean;
     preload: boolean;
     host: string;
     port: number;
@@ -123,6 +201,37 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     cacheTypeV: "auto" | "f16" | "q8_0" | "q4_0" | "q4_1" | "q5_0" | "q5_1" | "bf16" | "f32" | "iq4_nl";
     kvUnified: boolean;
     kvStreamStageMib: number;
+    kvmemEnabled: boolean;
+    kvmemBudget: number;
+    kvmemGenReserve: number;
+    kvmemBlockTokens: number;
+    kvmemSinkTokens: number;
+    kvmemRecentTokens: number;
+    kvmemMethod: "" | "recency" | "retrieval";
+    kvmemQueryLast: number;
+    kvmemQueryMaxTokens: number;
+    kvmemQueryReplay: "" | "auto" | "legacy";
+    kvmemQueryPolicy: "" | "legacy" | "user";
+    kvmemMtpState: "" | "auto" | "snapshots" | "replay";
+    kvmemGpuRatio: number;
+    kvmemCpuGb: number;
+    kvmemNvmeGb: number;
+    kvmemNvmeDir: string;
+    kvmemHarvestV: boolean;
+    kvmemRawKNvme: boolean;
+    nPredict: number;
+    loadMode: "" | "auto" | "none" | "mmap" | "mlock" | "mmap+mlock" | "dio";
+    kvDtype: "" | "f16" | "q8_0" | "q4_0" | "q5_0" | "f32";
+    specKvDtype: "" | "f16" | "q8_0" | "q4_0" | "q5_0" | "f32";
+    specDraftNMax: number;
+    specDraftPMin: number;
+    frequencyPenalty: number;
+    mmprojOffload: boolean;
+    chatTemplateFile: string;
+    chatTemplateKwargs: string;
+    reasoningEffort: "" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+    reasoningBudgetMessage: string;
+    guardContextOverflow: boolean;
     temp: number;
     topK: number;
     topP: number;

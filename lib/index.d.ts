@@ -18,7 +18,7 @@ import { type LocalModelConfig } from './config.js';
 /** 诊断信息里显示的插件名。 */
 export declare const name = "local-model";
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export declare const PLUGIN_VERSION = "0.5.3";
+export declare const PLUGIN_VERSION = "0.7.0";
 /**
  * 硬依赖：无。
  *
@@ -36,6 +36,7 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     selectedModel: string;
     mmprojFile: string;
     mtp: boolean;
+    mtpWithVision: boolean;
     preload: boolean;
     host: string;
     port: number;
@@ -53,6 +54,37 @@ export declare const Config: import("@deepseek-ai/schemastery").Schema<{
     cacheTypeV: "auto" | "f16" | "q8_0" | "q4_0" | "q4_1" | "q5_0" | "q5_1" | "bf16" | "f32" | "iq4_nl";
     kvUnified: boolean;
     kvStreamStageMib: number;
+    kvmemEnabled: boolean;
+    kvmemBudget: number;
+    kvmemGenReserve: number;
+    kvmemBlockTokens: number;
+    kvmemSinkTokens: number;
+    kvmemRecentTokens: number;
+    kvmemMethod: "" | "recency" | "retrieval";
+    kvmemQueryLast: number;
+    kvmemQueryMaxTokens: number;
+    kvmemQueryReplay: "" | "auto" | "legacy";
+    kvmemQueryPolicy: "" | "legacy" | "user";
+    kvmemMtpState: "" | "auto" | "snapshots" | "replay";
+    kvmemGpuRatio: number;
+    kvmemCpuGb: number;
+    kvmemNvmeGb: number;
+    kvmemNvmeDir: string;
+    kvmemHarvestV: boolean;
+    kvmemRawKNvme: boolean;
+    nPredict: number;
+    loadMode: "" | "auto" | "none" | "mmap" | "mlock" | "mmap+mlock" | "dio";
+    kvDtype: "" | "f16" | "q8_0" | "q4_0" | "q5_0" | "f32";
+    specKvDtype: "" | "f16" | "q8_0" | "q4_0" | "q5_0" | "f32";
+    specDraftNMax: number;
+    specDraftPMin: number;
+    frequencyPenalty: number;
+    mmprojOffload: boolean;
+    chatTemplateFile: string;
+    chatTemplateKwargs: string;
+    reasoningEffort: "" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+    reasoningBudgetMessage: string;
+    guardContextOverflow: boolean;
     temp: number;
     topK: number;
     topP: number;

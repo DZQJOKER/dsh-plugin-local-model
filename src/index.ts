@@ -29,12 +29,13 @@ import { registerWebBridge } from './webBridge.js'
 import { bridgeLlmRoute, buildRouteSpec, renderRouteYaml } from './llmBridge.js'
 import { registerLocalModelTool } from './tools.js'
 import { registerLocalModelCommands } from './commands.js'
+import { DEFAULT_GUARD_LIMITS } from './contextGuard.js'
 
 /** 诊断信息里显示的插件名。 */
 export const name = 'local-model'
 
 /** 与 package.json 的 version 对齐，设置页会显示它，便于确认改动是否生效。 */
-export const PLUGIN_VERSION = '0.5.3'
+export const PLUGIN_VERSION = '0.7.0'
 
 /**
  * 硬依赖：无。
@@ -88,6 +89,12 @@ export function apply(ctx: Context, config?: Partial<LocalModelConfig>): void {
       preserveThinking: runtime.config.preserveThinking,
       supportedEfforts: runtime.reasoningEfforts,
     }),
+    // 输出上限溢出保护：n_ctx 取 ctxSize（就是启动时下发的 -c），与真实服务端一致。
+    // 关掉时返回 null，代理会完全跳过这条通道（连请求体都不再缓冲）。
+    contextGuard: () =>
+      runtime.config.guardContextOverflow
+        ? { nCtx: runtime.config.ctxSize, ...DEFAULT_GUARD_LIMITS }
+        : null,
     log,
   })
   runtime.attachProxy(proxy)

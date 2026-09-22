@@ -2,6 +2,7 @@ import type { Log } from './log.js';
 import type { ResolvedConfig } from './configResolve.js';
 import { type LocalModelEntry, type ModelShard } from './registry.js';
 import { type LlamaServerArgInput } from './llama/args.js';
+import { type LaunchReport } from './launchReport.js';
 import { type FlashAttnMode } from './llama/capabilities.js';
 import { type LlamaServerExitInfo } from './llama/runner.js';
 export type RuntimeState = 'disabled' | 'idle' | 'starting' | 'ready' | 'stopping' | 'failed';
@@ -57,6 +58,15 @@ export interface RuntimeStatus {
      * 排查「拨了没反应」时第一眼就该看到它。
      */
     reasoningEfforts: string[] | null;
+    /**
+     * 本次启动的完整参数报告；从没加载过模型时为 null。
+     *
+     * 解析对象是**真正下发给 llama-server 的 args**，不是设置页里的配置 ——
+     * 两者之间隔着门控跳过、构建默认值与自动收敛（`-ub <= -b`、`-np 1` 之类），
+     * 只有 args 能回答「现在到底跑在什么参数上」。设置页顶部把它渲染成代码块，
+     * 用户不必再去日志里翻那一行几百字符的命令行。
+     */
+    launch: LaunchReport | null;
 }
 /** 插件向生命周期层注入的代理句柄，避免 lifecycle 直接依赖 http 实现。 */
 export interface ProxyHost {
@@ -170,6 +180,8 @@ export declare class LocalModelRuntime {
     private selectedOverride;
     private upstreamPort;
     private commandLine;
+    /** 本次启动的参数报告（设置页顶部的面板用它渲染）；未加载时为 null。 */
+    private launch;
     private loadedAt;
     private lastActivityAt;
     /** 上次 tick() 跑过的时间；用来回答"5 分钟过去了吗" —— 即使 tick 没真的触发卸载。 */

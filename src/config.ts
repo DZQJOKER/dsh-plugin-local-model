@@ -15,10 +15,20 @@ export interface LocalModelConfig {
   /** 手动指定的视觉投影文件（mmproj）；留空 = 沿用同目录的自动关联。 */
   mmprojFile: string
   /**
-   * 多 Token 预测（MTP）。开启后下发 `--spec-type draft-mtp`，
-   * 并**强制禁用视觉投影**（两者在 llama.cpp 里不能共存）。
+   * 多 Token 预测（MTP）。开启后下发 `--spec-type draft-mtp`。
+   *
+   * 与视觉投影的关系由 `mtpWithVision` 决定：上游 llama.cpp 里两者不能共存，
+   * 但 kvmem 那个独立 server 可以（本机实测：`clip_model_loader: has vision encoder`
+   * 与 `creating MTP draft context` 同时出现且服务正常）。
    */
   mtp: boolean
+  /**
+   * MTP 与视觉投影**同时**下发（默认开启）。
+   *
+   * true = 两个都发。上游 llama.cpp 上这样会让服务端加载失败，所以那一侧要关掉本项；
+   * false = 保持旧的互斥行为（MTP 生效、`--mmproj` 被忽略并给出提示）。
+   */
+  mtpWithVision: boolean
   preload: boolean
 
   host: string
@@ -58,6 +68,78 @@ export interface LocalModelConfig {
    * 插件因此按 `--help` 探测结果决定是否下发，不认识的构建上会被跳过。0 = 不下发。
    */
   kvStreamStageMib: number
+
+  // ── KVMem 分块 KV 检索（kvmem/kvmem-llama.cpp 分支专有）──────────────────
+  /** 是否启用 KVMem（--no-kvmem 关闭）。默认开启 = 不下发该参数。 */
+  kvmemEnabled: boolean
+  /** GPU 工作集 token 数（--kvmem-budget）。-1 = 不下发（构建默认 0 = 等于 n_ctx）。 */
+  kvmemBudget: number
+  /** 解码预留（--kvmem-gen-reserve）：**单次生成的上限**（含思考）。-1 = 不下发。 */
+  kvmemGenReserve: number
+  /** 检索块大小（--kvmem-block-tokens）。-1 = 不下发。 */
+  kvmemBlockTokens: number
+  /** 常驻前缀 token 数（--kvmem-sink-tokens）。-1 = 不下发。 */
+  kvmemSinkTokens: number
+  /** 常驻后缀 token 数（--kvmem-recent-tokens）。-1 = 不下发。 */
+  kvmemRecentTokens: number
+  /** 选择算法（--kvmem-method）：recency | retrieval。空串 = 不下发。 */
+  kvmemMethod: string
+  /** 检索查询取提示词末尾多少 token（--kvmem-query-last）。-1 = 不下发。 */
+  kvmemQueryLast: number
+  /** 检索查询的上限 token 数（--kvmem-query-max-tokens）。-1 = 不下发。 */
+  kvmemQueryMaxTokens: number
+  /** 查询重放模式（--kvmem-query-replay）：legacy | auto。空串 = 不下发。 */
+  kvmemQueryReplay: string
+  /** 查询策略（--kvmem-query-policy）：legacy | user。空串 = 不下发。 */
+  kvmemQueryPolicy: string
+  /** MTP 状态模式（--kvmem-mtp-state）：snapshots | auto | replay。空串 = 不下发。 */
+  kvmemMtpState: string
+  /** 槽池占显存比例上限（--kvmem-gpu-ratio，如 0.8）。-1 = 不下发。 */
+  kvmemGpuRatio: number
+  /** CPU 溢出场 GiB（--kvmem-cpu-gb）。-1 = 不下发（构建默认 0 = 关闭）。 */
+  kvmemCpuGb: number
+  /** NVMe 溢出场 GiB（--kvmem-nvme-gb）。-1 = 不下发（构建默认 0 = 关闭）。 */
+  kvmemNvmeGb: number
+  /** NVMe 溢出场目录（--kvmem-nvme-dir）。空串 = 不下发。 */
+  kvmemNvmeDir: string
+  /** 用原始 K 预填 V 到主机内存（--kvmem-harvest-v）。 */
+  kvmemHarvestV: boolean
+  /** 原始 K 与 V 落 NVMe（--kvmem-raw-k-nvme，需 --kvmem-nvme-gb）。 */
+  kvmemRawKNvme: boolean
+
+  // ── 输出上限、加载方式、MTP 细节与模板 ────────────────────────────────────
+  /** 服务端默认输出上限（-n / --n-predict）。-1 = 不下发。 */
+  nPredict: number
+  /** 权重加载方式（-lm / --load-mode）：auto|none|mmap|mlock|mmap+mlock|dio。空串 = 不下发。 */
+  loadMode: string
+  /** GPU KV 缓存类型（--kv-dtype，一次设 K 和 V）。空串 = 不下发。 */
+  kvDtype: string
+  /** MTP 草稿 K/V 精度（--spec-kv-dtype）。空串 = 不下发。 */
+  specKvDtype: string
+  /** MTP 单次草稿 token 数（--spec-draft-n-max）。-1 = 不下发。 */
+  specDraftNMax: number
+  /** MTP 草稿最小接受概率（--spec-draft-p-min）。-1 = 不下发。 */
+  specDraftPMin: number
+  /** 频率惩罚（--frequency-penalty）。0 = 不下发。 */
+  frequencyPenalty: number
+  /** 视觉编码器放 GPU；关闭时下发 --no-mmproj-offload。 */
+  mmprojOffload: boolean
+  /** 模板文件路径（--chat-template-file）。空串 = 不下发。 */
+  chatTemplateFile: string
+  /** 模板默认参数 JSON（--chat-template-kwargs）。空串 = 不下发。 */
+  chatTemplateKwargs: string
+  /** 服务端默认推理档位（--reasoning-effort）。空串 = 不下发。 */
+  reasoningEffort: string
+  /** 预算耗尽时的过渡语（--reasoning-budget-message）。空串 = 不下发。 */
+  reasoningBudgetMessage: string
+
+  /**
+   * 输出上限溢出保护（默认开启）。
+   *
+   * 关掉它，`prompt + max_tokens > n_ctx` 的请求会原样撞到服务端 ——
+   * 上游 llama.cpp 只是打 warning 并自行收敛，kvmem 那个独立 server 则是**硬拒绝 400**。
+   */
+  guardContextOverflow: boolean
 
   // ── 采样参数（默认值即用户指定的值，全部下发；与 llama.cpp 自身默认值不同）─────
   /** 温度（--temp）。越高越随机。llama.cpp 自身默认 0.8。 */
@@ -161,8 +243,18 @@ export const Config = Schema.object({
         '代价是首字前的 prompt 处理略慢、显存多占一点。' +
         '两个前提：① llama.cpp 构建要支持 MTP（2026-05 之后的构建）；② 模型必须是带 MTP 头的 GGUF（文件名常带 MTP 字样），' +
         '普通 GGUF 打开这个开关不会有任何加速。' +
-        '开启后本插件会**自动禁用视觉投影文件**（--mmproj）—— llama.cpp 的 MTP 与图像输入目前不能共存，' +
-        '强行一起下发会导致加载失败。需要看图时请关掉这一项。',
+        '与视觉投影的关系见下一项「MTP 与视觉共存」。',
+    ),
+
+  mtpWithVision: Schema.boolean()
+    .default(true)
+    .description(
+      'MTP 与视觉投影同时启用（默认开启）。' +
+        '**kvmem 分支的 llama-kvmem-server 支持两者共存**（本机实测：视觉头与 MTP 草稿上下文同时加载、看图对话正常），' +
+        '所以默认允许「开着 MTP 用图片」。' +
+        '⚠️ 官方 llama.cpp 的 llama-server 不行 —— 同时给它 --spec-type draft-mtp 与 --mmproj 会导致**加载失败**。' +
+        '如果你换回官方构建并因此在启动时看到加载错误，把本项关掉即可：关闭后两个选项恢复互斥，' +
+        'MTP 生效、视觉投影被忽略（插件会给出一条说明，不会静默）。',
     ),
 
   preload: Schema.boolean()
@@ -269,6 +361,210 @@ export const Config = Schema.object({
         '（llama.cpp 的 -np 默认是「自动」，会落到多序列并导致加载直接失败）。' +
         '因此开启本项后并发槽位为 1 —— 本地单人使用没有影响，但如果你在「附加参数」里自己设了 -np / --parallel，' +
         '插件不会覆盖它，那里不是 1 就会加载失败。',
+    ),
+
+  // ── KVMem 分块 KV 检索（kvmem/kvmem-llama.cpp 分支专有）──────────────────
+  /*
+   * 这一整组的默认值都是「不下发」：-1 表示不传该参数、空串表示不传、
+   * 布尔项按构建默认。因此装了官方 llama.cpp 的用户不会受任何影响 ——
+   * 这些选项会先经过 --help 探测，构建不认识就整体跳过（并在日志里说明）。
+   *
+   * 反过来，用 kvmem 分支的人会拿到一个关键提醒：它的 --kvmem-gen-reserve 默认只有 256，
+   * 而那是**单次生成的上限**，详见该项的说明。
+   */
+  kvmemEnabled: Schema.boolean()
+    .default(true)
+    .description(
+      '启用 KVMem 分块 KV 检索（--kvmem / --no-kvmem）。默认开启（不下发参数，用构建默认值）：' +
+        '历史 token 按块保存在主机侧，GPU 只留一个工作集，长上下文因此不必整个塞进显存。' +
+        '关闭后会下发 --no-kvmem，退回普通 KV 缓存 —— 显存占用与上下文长度强相关，长上下文更容易 OOM。' +
+        '仅对 kvmem 分支的 llama-kvmem-server 生效，官方 llama.cpp 构建会跳过本项。',
+    ),
+
+  kvmemBudget: Schema.number()
+    .default(-1)
+    .description(
+      'GPU 工作集 token 数（--kvmem-budget）：检索时最多把多少历史 token 留在显存里。' +
+        '-1 = 不下发，沿用构建默认（0，含义是「等于 n_ctx」）。' +
+        '这是长上下文显存占用的主要旋钮：调小省显存、但检索能触达的历史更少；' +
+        '调大则相反。它与下面的「解码预留」共同决定 GPU KV 总量（budget + gen_reserve）。',
+    ),
+
+  kvmemGenReserve: Schema.number()
+    .default(-1)
+    .description(
+      '解码预留（--kvmem-gen-reserve）：为「新生成的 token」预留的 GPU 槽位。' +
+        '★ 它同时是**单次生成的上限**（含思考内容）—— 一次回复无论你怎么设置都写不过这个长度，' +
+        '超出会被硬截断且不报错。' +
+        '⚠️ 这个构建的默认值只有 256：不设置它，模型每次回复最多只能写 256 个 token，' +
+        '表现是「回答说到一半突然停住」，很容易被误判成模型坏了。' +
+        '建议设成不小于 dsh 路由的「单次最大输出 tokens」（例如 8192～16384）。-1 = 不下发（= 沿用 256）。',
+    ),
+
+  kvmemBlockTokens: Schema.number()
+    .default(-1)
+    .description('检索块大小（--kvmem-block-tokens）：KV 按这么大的块组织与搬运。默认 128。-1 = 不下发。'),
+
+  kvmemSinkTokens: Schema.number()
+    .default(-1)
+    .description(
+      '常驻前缀 token 数（--kvmem-sink-tokens）：开头这么多 token 始终留在 GPU 工作集里，不被检索淘汰。' +
+        '适合让系统提示词这类「每一轮都要用到」的内容常驻。0 = 只保留一个块（并非关闭）。-1 = 不下发。',
+    ),
+
+  kvmemRecentTokens: Schema.number()
+    .default(-1)
+    .description('常驻后缀 token 数（--kvmem-recent-tokens）：最近这么多 token 始终保留在工作集里。默认 0。-1 = 不下发。'),
+
+  kvmemMethod: Schema.union(['', 'recency', 'retrieval'] as const)
+    .default('')
+    .description(
+      '选择算法（--kvmem-method）：retrieval = 按当前提问检索最相关的历史块（默认，长对话更适合）；' +
+        'recency = 只按新旧程度保留最近的块。空 = 不下发。',
+    ),
+
+  kvmemQueryLast: Schema.number()
+    .default(-1)
+    .description('检索查询的兜底长度（--kvmem-query-last）：取末尾这么多 token 当查询。默认 64。-1 = 不下发。'),
+
+  kvmemQueryMaxTokens: Schema.number()
+    .default(-1)
+    .description('检索查询的长度上限（--kvmem-query-max-tokens）：把「最后一条用户消息」当查询时截到多长。默认 512。-1 = 不下发。'),
+
+  kvmemQueryReplay: Schema.union(['', 'legacy', 'auto'] as const)
+    .default('')
+    .description('查询重放模式（--kvmem-query-replay）。空 = 不下发（构建默认 auto）。不确定就留空。'),
+
+  kvmemQueryPolicy: Schema.union(['', 'legacy', 'user'] as const)
+    .default('')
+    .description('查询策略（--kvmem-query-policy）。空 = 不下发（构建默认 user）。不确定就留空。'),
+
+  kvmemMtpState: Schema.union(['', 'snapshots', 'auto', 'replay'] as const)
+    .default('')
+    .description(
+      'MTP 状态模式（--kvmem-mtp-state）：开着多 Token 预测时，草稿状态怎么跨轮复用。' +
+        '空 = 不下发（构建默认 replay）。开 MTP 且长对话出现异常时可以先试 auto。',
+    ),
+
+  kvmemGpuRatio: Schema.number()
+    .default(-1)
+    .description(
+      '槽池显存占比上限（--kvmem-gpu-ratio，0～1 的小数，例如 0.8）：KV 槽池最多占显卡显存的这个比例。' +
+        '默认 0.50；显存富余时可以调大以容纳更长的工作集。-1 = 不下发。',
+    ),
+
+  kvmemCpuGb: Schema.number()
+    .default(-1)
+    .description(
+      'CPU 溢出场大小（GiB，--kvmem-cpu-gb）：超出 GPU 工作集的历史可以溢到主机内存多少 GiB。' +
+        '0 = 关闭（构建默认）。注意它换的是内存而不是「免费容量」，会拖慢长上下文的取回。-1 = 不下发。',
+    ),
+
+  kvmemNvmeGb: Schema.number()
+    .default(-1)
+    .description('NVMe 溢出场大小（GiB，--kvmem-nvme-gb）：把溢出的 KV 落到 NVMe 文件。0 = 关闭（构建默认）。-1 = 不下发。'),
+
+  kvmemNvmeDir: Schema.string()
+    .default('')
+    .description('NVMe 溢出场目录（--kvmem-nvme-dir）。留空 = 不下发（构建默认 /tmp/kvmem_nvme，Windows 上建议显式指定一个盘上目录）。'),
+
+  kvmemHarvestV: Schema.boolean()
+    .default(false)
+    .description('用原始 K 预填 V 到主机内存（--kvmem-harvest-v）。默认关闭。仅在按官方配方调优 NVMe 溢写时才需要。'),
+
+  kvmemRawKNvme: Schema.boolean()
+    .default(false)
+    .description('把原始 K 与 V 都写到 NVMe（--kvmem-raw-k-nvme）。需要先设置上面的 NVMe 溢出场大小，否则构建会报错。'),
+
+  // ── 输出上限、加载方式、MTP 细节与模板 ────────────────────────────────────
+  nPredict: Schema.number()
+    .default(-1)
+    .description(
+      '服务端默认输出上限（-n / --n-predict）：**没有自带 max_tokens 的请求**最多生成多少 token。' +
+        '与「单次最大输出 tokens」不是一回事 —— 那个是 dsh 路由声明、每条请求都会带上；' +
+        '这一项只影响绕过 dsh 的调用（curl、脚本、其它客户端）。' +
+        '⚠️ kvmem 分支的这个默认值只有 128，用外部脚本调本地模型时建议设成 8192 一类的值。-1 = 不下发。',
+    ),
+
+  loadMode: Schema.union(['', 'auto', 'none', 'mmap', 'mlock', 'mmap+mlock', 'dio'] as const)
+    .default('')
+    .description(
+      '权重加载方式（-lm / --load-mode）：auto = 自动、none = 不特殊处理、mmap = 内存映射、' +
+        'mlock = 锁定物理内存、mmap+mlock = 两者、dio = 直接 IO（绕过页缓存）。' +
+        '空 = 不下发，此时沿用下面「内存映射」「锁定内存」两个开关（等价于旧行为）。' +
+        'kvmem 分支已把 --mmap / --no-mmap / --mlock 归为 -lm 的过时别名，用本项更可靠。',
+    ),
+
+  kvDtype: Schema.union(['', 'f16', 'f32', 'q8_0', 'q5_0', 'q4_0'] as const)
+    .default('')
+    .description(
+      'GPU KV 缓存类型（--kv-dtype）：一次设置 K 和 V 两项，是 kvmem 分支的合并写法。' +
+        '空 = 不下发，改用下面「KV cache 精度（K/V）」两项（上游 llama.cpp 只有那两个通道）。' +
+        '两者同时设置属于重复配置，插件会给出提示，建议只留一个。仅对 kvmem 分支生效。',
+    ),
+
+  specKvDtype: Schema.union(['', 'f16', 'f32', 'q8_0', 'q5_0', 'q4_0'] as const)
+    .default('')
+    .description('多 Token 预测（MTP）草稿用的 K/V 精度（--spec-kv-dtype）。空 = 不下发（构建默认 f16）。降低它可以省显存。'),
+
+  specDraftNMax: Schema.number()
+    .default(-1)
+    .description('MTP 单次草稿 token 数（--spec-draft-n-max）：一次猜几个后续 token。默认 3；调大可能更快也可能白猜。-1 = 不下发。'),
+
+  specDraftPMin: Schema.number()
+    .default(-1)
+    .description('MTP 草稿的最小接受概率（--spec-draft-p-min，0～1）。默认 0（不做此过滤）。-1 = 不下发。'),
+
+  frequencyPenalty: Schema.number()
+    .default(0)
+    .description('频率惩罚（--frequency-penalty）：按出现次数抑制重复用词，-2～2。0 = 不惩罚，也**不会下发**该参数（与构建默认一致）。'),
+
+  mmprojOffload: Schema.boolean()
+    .default(true)
+    .description(
+      '视觉编码器放 GPU（--mmproj-offload / --no-mmproj-offload）。默认开启（不下发参数）。' +
+        '显存紧张时关掉它，视觉编码会改用 CPU 计算 —— 省显存但看图明显变慢。只在挂了视觉投影文件时有意义。',
+    ),
+
+  chatTemplateFile: Schema.string()
+    .default('')
+    .description(
+      '对话模板文件路径（--chat-template-file）：直接读一个 Jinja 模板文件，替代模型 GGUF 里内置的那份。' +
+        '与上面的「对话模板」是两条通道，同时设置时生效顺序由构建决定，建议只留一个。留空 = 不下发。',
+    ),
+
+  chatTemplateKwargs: Schema.string()
+    .default('')
+    .description(
+      '模板默认参数（--chat-template-kwargs，JSON 文本）。例如 {"enable_thinking":true}。' +
+        '这是**加载时**的模板默认值，逐条请求里的同名参数会覆盖它。留空 = 不下发。',
+    ),
+
+  reasoningEffort: Schema.union(['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const)
+    .default('')
+    .description(
+      '服务端默认推理档位（--reasoning-effort）：**请求没有自己表达档位**时用的值，直接交给模型模板；' +
+        'none = 不思考。档位名必须被模型模板认识（kvmem 构建在这点上是宽容的，认不出会退回模板默认档）。' +
+        '空 = 不下发。注意：dsh 对话框里的「推理等级」滑杆是逐条请求下发的，两者不冲突，请求优先。',
+    ),
+
+  reasoningBudgetMessage: Schema.string()
+    .default('')
+    .description(
+      '推理预算耗尽时的过渡语（--reasoning-budget-message）：思考被强制结束前注入的一句话，' +
+        '用于让模型平滑收尾（如「时间到，请直接作答」）。不填时模型是被硬掐断的，回答质量会明显下降。留空 = 不下发。',
+    ),
+
+  guardContextOverflow: Schema.boolean()
+    .default(true)
+    .description(
+      '输出上限溢出保护（默认开启）。' +
+        '上游 llama.cpp 遇到 prompt + max_tokens 超过上下文时只会打一条 warning 并自行收敛，' +
+        '但 kvmem 分支的独立 server 会**直接返回 400**：prompt + max_tokens exceeds n_ctx，' +
+        '且报错里既没有 prompt 长度也没有 n_ctx，很难定位。' +
+        '开启后插件会在请求进入时把「必然失败」的超大输出上限压到装得下，并在服务端拒绝时逐级减半重试；' +
+        '实在装不下才把错误交回，并附上一句说明真实原因的中文提示。' +
+        '它只动 max_tokens，不碰你的对话内容，关掉它不会带来任何额外能力 —— 除非你在排查这一层的问题。',
     ),
 
   // ── 采样参数 ────────────────────────────────────────────────────────────

@@ -2,6 +2,15 @@ import http from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Log } from './log.js'
 import { isChatCompletionPath, rewriteChatRequestBody, type ThinkPolicy } from './requestRewrite.js'
+import {
+  applyMaxTokens,
+  isContextOverflowError,
+  nextRetryMaxTokens,
+  overflowHint,
+  preflightMaxTokens,
+  readMaxTokens,
+  type ContextGuardLimits,
+} from './contextGuard.js'
 
 export interface ProxyOptions {
   host: string
@@ -23,6 +32,13 @@ export interface ProxyOptions {
    * 做成回调而不是启动快照：设置随时可能被改，代理必须按最新值走。
    */
   thinkPolicy?: () => ThinkPolicy | null
+  /**
+   * 输出上限溢出保护。返回 null（或压根不提供）= 完全不动请求体、原样直通。
+   *
+   * 同样做成回调：n_ctx 会随「上下文长度」的设置变化，代理必须按最新值走。
+   * nCtx 取自配置里的 ctxSize（就是启动时下发的 -c），与真实服务端一致。
+   */
+  contextGuard?: () => ContextGuardLimits | null
   log: Log
 }
 
@@ -241,72 +257,80 @@ export class LocalModelProxy {
     }
   }
 
+  /**
+   * 请求分派：决定这一条要不要碰请求体，以及走哪条转发路径。
+   *
+   * 两条独立的改写通道，各自可以单独关闭：
+   *   policy —— 思考开关（模板参数 + 剥离历史 think）
+   *   guard  —— 输出上限溢出保护（max_tokens vs n_ctx，见 contextGuard.ts）
+   *
+   * 两者都不需要时，保持原来的「请求体边读边转发」——一个字节都不在我们的内存里停留。
+   */
   private async pipe(req: IncomingMessage, res: ServerResponse, target: string, url: URL): Promise<void> {
-    // 思考开关只在 POST 的对话补全上生效；其它一切请求连请求体都不必读，保持原来的流式直通。
     const policy = this.options.thinkPolicy?.() ?? null
-    const shouldRewrite = policy !== null && req.method === 'POST' && isChatCompletionPath(url.pathname)
+    const guard = this.options.contextGuard?.() ?? null
+    const isChat = req.method === 'POST' && isChatCompletionPath(url.pathname)
+    const wantRewrite = isChat && policy !== null
+    const wantGuard = isChat && guard !== null && Number.isFinite(guard.nCtx) && guard.nCtx > 0
 
-    let body: Buffer | null = null
-    if (shouldRewrite && policy) {
-      try {
-        const outcome = rewriteChatRequestBody(await readRequestBody(req, MAX_REWRITE_BYTES), policy)
-        body = outcome.body
-        if (outcome.notice) this.options.log.debug(`未改写请求体：${outcome.notice}`)
-        else if (outcome.changed) this.options.log.debug(`已改写请求体：${describeThinking(body)}`)
-      } catch (error) {
-        this.options.log.error(`读取请求体失败：${(error as Error).message}`)
-        if (!res.headersSent) json(res, 413, { error: { message: (error as Error).message, type: 'local_model_request_error' } })
-        return
+    if (!wantRewrite && !wantGuard) return this.pipeDirect(req, res, target, url, null)
+
+    let body: Buffer
+    try {
+      body = await readRequestBody(req, MAX_REWRITE_BYTES)
+    } catch (error) {
+      this.options.log.error(`读取请求体失败：${(error as Error).message}`)
+      if (!res.headersSent) {
+        json(res, 413, { error: { message: (error as Error).message, type: 'local_model_request_error' } })
       }
+      return
     }
 
-    return new Promise<void>((resolve) => {
-      const base = new URL(target)
-      const headers: http.OutgoingHttpHeaders = {}
-      for (const [key, value] of Object.entries(req.headers)) {
-        const lower = key.toLowerCase()
-        if (HOP_BY_HOP.has(lower)) continue
-        if (lower === 'host') continue
-        headers[key] = value
-      }
-      headers.host = base.host
+    if (wantRewrite && policy) {
+      const outcome = rewriteChatRequestBody(body, policy)
+      body = outcome.body
+      if (outcome.notice) this.options.log.debug(`未改写请求体：${outcome.notice}`)
+      else if (outcome.changed) this.options.log.debug(`已改写请求体：${describeThinking(body)}`)
+    }
 
-      if (body !== null) {
-        // 改写会改变长度：原样透传 content-length / transfer-encoding 会让上游读到半截或直接挂住。
-        delete headers['content-length']
-        delete headers['transfer-encoding']
-        headers['content-length'] = String(body.byteLength)
-      }
+    if (!wantGuard || !guard) return this.pipeDirect(req, res, target, url, body)
 
-      const upstreamReq = http.request(
-        {
-          protocol: base.protocol,
-          hostname: base.hostname,
-          port: base.port,
-          path: `${url.pathname}${url.search}`,
-          method: req.method,
-          headers,
-        },
-        (upstreamRes) => {
-          const outHeaders: http.OutgoingHttpHeaders = {}
-          for (const [key, value] of Object.entries(upstreamRes.headers)) {
-            if (HOP_BY_HOP.has(key.toLowerCase())) continue
-            outHeaders[key] = value
-          }
-          outHeaders['x-local-model'] = this.options.modelId()
-          res.writeHead(upstreamRes.statusCode ?? 502, outHeaders)
-          upstreamRes.pipe(res)
-          upstreamRes.once('end', () => resolve())
-          upstreamRes.once('error', () => resolve())
-        },
+    // 预防性收敛：`max_tokens >= n_ctx` 的请求对任何非空提示词都必然放不下，先压到装得下。
+    // 这一步不依赖任何 token 估算，因此零假阳性 —— 它绝不会改坏一个本来能跑通的请求。
+    const pre = preflightMaxTokens(body, guard)
+    if (pre.changed) {
+      body = pre.body
+      this.options.log.warn(
+        `请求里的输出上限（${pre.from}）不小于服务端上下文长度（${guard.nCtx}），已先压到 ${pre.to}。` +
+          '根治办法是把 dsh 路由里那个模型的「单次最大输出 tokens」改小 —— 否则每次对话都要走这条补救路径。',
       )
+    }
+
+    return this.pipeGuarded(req, res, target, url, body, guard)
+  }
+
+  /**
+   * 原样转发（可带一个已改写好的请求体）。
+   *
+   * `body === null` 表示完全不缓冲：请求边读边发、响应边收边发，SSE 流式对话走的就是这条路。
+   */
+  private pipeDirect(
+    req: IncomingMessage,
+    res: ServerResponse,
+    target: string,
+    url: URL,
+    body: Buffer | null,
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const upstreamReq = http.request(this.upstreamOptions(req, target, url, body), (upstreamRes) => {
+        this.writeHeadFrom(res, upstreamRes)
+        upstreamRes.pipe(res)
+        upstreamRes.once('end', () => resolve())
+        upstreamRes.once('error', () => resolve())
+      })
 
       upstreamReq.once('error', (error) => {
-        if (!res.headersSent) {
-          json(res, 502, { error: { message: `连接 llama-server 失败：${error.message}`, type: 'local_model_unavailable' } })
-        } else {
-          res.end()
-        }
+        this.reportUpstreamError(res, error)
         resolve()
       })
 
@@ -317,6 +341,207 @@ export class LocalModelProxy {
       if (body !== null) upstreamReq.end(body)
       else req.pipe(upstreamReq)
     })
+  }
+
+  /**
+   * 带溢出保护地转发一条对话请求。
+   *
+   * 性能上的关键取舍：**只有 400 才被缓冲下来看一眼**（它的体积极小），其余状态码一律
+   * 照旧流式直通 —— 所以正常对话的开销与不带保护时完全一样，连多一次拷贝都没有。
+   *
+   * 命中溢出判据时，把 max_tokens 逐级减半重发。服务端这项校验发生在解码之前
+   * （只需对提示词分词），一次失败的尝试很便宜；而不这么做，用户拿到的那条 400
+   * 里既没有 n_ctx 也没有提示词长度，除了乱试没有别的办法。
+   */
+  private async pipeGuarded(
+    req: IncomingMessage,
+    res: ServerResponse,
+    target: string,
+    url: URL,
+    body: Buffer,
+    guard: ContextGuardLimits,
+  ): Promise<void> {
+    let current = body
+    let limit = parseMaxTokens(body)
+    let lastBuffered: BufferedResponse | null = null
+
+    for (let attempt = 0; ; attempt++) {
+      // 用户可能在重试期间关掉了这一轮对话；此时上游已经没人在等，不必再打字。
+      if (res.writableEnded || res.destroyed) return
+
+      const outcome = await this.sendOnce(req, res, target, url, current)
+      if (outcome.kind === 'streamed') return
+      lastBuffered = outcome
+
+      if (!isContextOverflowError(outcome.body.toString('utf8'))) {
+        this.flushBuffered(res, outcome)
+        return
+      }
+
+      const next = attempt >= guard.maxAttempts ? null : nextRetryMaxTokens(limit, guard)
+      const nextBody = next === null ? null : applyMaxTokens(body, next)
+      if (next === null || nextBody === null) {
+        this.options.log.error(
+          `上下文装不下这次请求（n_ctx=${guard.nCtx}）：已把输出上限压到 ${limit ?? '未指定'} 仍被拒绝。` +
+            '提示词本身就快占满上下文了，请调大「上下文长度」或让 dsh 侧早点压缩历史。',
+        )
+        this.flushBuffered(res, outcome, overflowHint(guard.nCtx, null))
+        return
+      }
+
+      this.options.log.warn(
+        `服务端报「上下文放不下」，已把输出上限从 ${limit ?? '未指定'} 压到 ${next} 后重试（第 ${attempt + 1} 次）。` +
+          '根治办法是把 dsh 路由里那个模型的 contextWindow / maxTokens 改成与实际启动参数 -c 一致的值。',
+      )
+      current = nextBody
+      limit = next
+    }
+  }
+
+  /**
+   * 发一次并等响应。
+   *
+   * 非 400 的状态码原样流给客户端并返回 `streamed`；400 则把（很小的）响应体整个读下来，
+   * 交给调用方判断是「上下文放不下」还是别的错误 —— 只有前者才值得重试。
+   */
+  private sendOnce(
+    req: IncomingMessage,
+    res: ServerResponse,
+    target: string,
+    url: URL,
+    body: Buffer,
+  ): Promise<{ kind: 'streamed' } | BufferedResponse> {
+    /**
+     * 缓冲 400 响应体的上限。
+     *
+     * 只缓冲 400，且只为读那句几十字节的报错 —— 设这个上限是「宁可当普通错误放行，
+     * 也不把几百 MB 的响应读进内存」的兜底（攒多了说明上游返回的是别的东西，
+     * 那种情况我们本来也不认识）。
+     */
+    const MAX_ERROR_BYTES = 64 * 1024
+
+    return new Promise((resolve) => {
+      const upstreamReq = http.request(this.upstreamOptions(req, target, url, body), (upstreamRes) => {
+        const status = upstreamRes.statusCode ?? 502
+
+        if (status !== 400) {
+          this.writeHeadFrom(res, upstreamRes)
+          upstreamRes.pipe(res)
+          upstreamRes.once('end', () => resolve({ kind: 'streamed' }))
+          upstreamRes.once('error', () => resolve({ kind: 'streamed' }))
+          return
+        }
+
+        const chunks: Buffer[] = []
+        let size = 0
+        const done = (): void => {
+          resolve({ kind: 'buffered', status, headers: upstreamRes.headers, body: Buffer.concat(chunks) })
+        }
+        upstreamRes.on('data', (chunk: Buffer) => {
+          size += chunk.length
+          if (size <= MAX_ERROR_BYTES) chunks.push(chunk)
+        })
+        upstreamRes.once('end', done)
+        upstreamRes.once('error', done)
+      })
+
+      upstreamReq.once('error', (error) => {
+        this.reportUpstreamError(res, error)
+        resolve({ kind: 'streamed' })
+      })
+
+      res.once('close', () => upstreamReq.destroy())
+      req.once('aborted', () => upstreamReq.destroy())
+
+      upstreamReq.end(body)
+    })
+  }
+
+  /** 组装转发给上游的请求参数：透传头、改 host、按实际体长重算 content-length。 */
+  private upstreamOptions(
+    req: IncomingMessage,
+    target: string,
+    url: URL,
+    body: Buffer | null,
+  ): http.RequestOptions {
+    const base = new URL(target)
+    const headers: http.OutgoingHttpHeaders = {}
+    for (const [key, value] of Object.entries(req.headers)) {
+      const lower = key.toLowerCase()
+      if (HOP_BY_HOP.has(lower)) continue
+      if (lower === 'host') continue
+      headers[key] = value
+    }
+    headers.host = base.host
+
+    if (body !== null) {
+      // 改写会改变长度：原样透传 content-length / transfer-encoding 会让上游读到半截或直接挂住。
+      delete headers['content-length']
+      delete headers['transfer-encoding']
+      headers['content-length'] = String(body.byteLength)
+    }
+
+    return {
+      protocol: base.protocol,
+      hostname: base.hostname,
+      port: base.port,
+      path: `${url.pathname}${url.search}`,
+      method: req.method,
+      headers,
+    }
+  }
+
+  private writeHeadFrom(res: ServerResponse, upstreamRes: IncomingMessage): void {
+    const outHeaders: http.OutgoingHttpHeaders = {}
+    for (const [key, value] of Object.entries(upstreamRes.headers)) {
+      if (HOP_BY_HOP.has(key.toLowerCase())) continue
+      outHeaders[key] = value
+    }
+    outHeaders['x-local-model'] = this.options.modelId()
+    res.writeHead(upstreamRes.statusCode ?? 502, outHeaders)
+  }
+
+  /**
+   * 把缓冲下来的响应原样还给客户端；给了 hint 就换成一句能读懂的中文说明。
+   *
+   * 为什么值得替换原文：`prompt + max_tokens exceeds n_ctx` 里**既没有 n_ctx 也没有
+   * max_tokens**，用户唯一能做的只有乱试。原文保留在 `detail` 里，便于对着日志排查。
+   */
+  private flushBuffered(res: ServerResponse, outcome: BufferedResponse, hint?: string): void {
+    if (res.headersSent || res.writableEnded) return
+
+    const outHeaders: http.OutgoingHttpHeaders = {}
+    for (const [key, value] of Object.entries(outcome.headers)) {
+      if (HOP_BY_HOP.has(key.toLowerCase())) continue
+      outHeaders[key] = value
+    }
+    outHeaders['x-local-model'] = this.options.modelId()
+
+    const payload = hint
+      ? Buffer.from(
+          JSON.stringify({
+            error: {
+              message: hint,
+              type: 'context_overflow',
+              detail: outcome.body.toString('utf8').slice(0, 2000),
+            },
+          }),
+          'utf8',
+        )
+      : outcome.body
+
+    if (hint) outHeaders['content-type'] = 'application/json; charset=utf-8'
+    outHeaders['content-length'] = String(payload.byteLength)
+    res.writeHead(outcome.status, outHeaders)
+    res.end(payload)
+  }
+
+  private reportUpstreamError(res: ServerResponse, error: Error): void {
+    if (!res.headersSent) {
+      json(res, 502, { error: { message: `连接 llama-server 失败：${error.message}`, type: 'local_model_unavailable' } })
+    } else {
+      res.end()
+    }
   }
 }
 
@@ -356,6 +581,30 @@ function readRequestBody(req: IncomingMessage, limitBytes: number): Promise<Buff
     req.on('aborted', () => fail(new Error('请求在发送过程中被中断')))
     req.on('error', (error) => fail(error))
   })
+}
+
+/** 一个被完整读下来的上游响应（目前只用于 400）。 */
+interface BufferedResponse {
+  kind: 'buffered'
+  status: number
+  headers: http.IncomingHttpHeaders
+  body: Buffer
+}
+
+/**
+ * 读出请求体里的输出上限；解析不了就当没指定。
+ *
+ * 这里刻意不复用 contextGuard.readMaxTokens 的入参形态：那个吃的是已经解析好的对象，
+ * 而代理手上只有 Buffer。解析失败一律回落到 null —— 溢出保护是补救措施，
+ * 不能因为「读不出来」反而把一条正常的请求挡下来。
+ */
+function parseMaxTokens(body: Buffer): number | null {
+  try {
+    const payload: unknown = JSON.parse(body.toString('utf8'))
+    return readMaxTokens(payload)
+  } catch {
+    return null
+  }
 }
 
 function isStatusPath(pathname: string): boolean {

@@ -46,6 +46,79 @@ export interface LlamaServerArgInput {
     kvUnified: boolean;
     /** --kv-stream-stage-mib；0 = 不下发。 */
     kvStreamStageMib: number;
+    /**
+     * 服务端默认输出上限（-n / --n-predict）。负数 = 不下发。
+     *
+     * 与配置里的 `maxTokens` 不是一回事：那个是 dsh 路由声明、最终体现为**每次请求**的
+     * `max_tokens`；这个是**没带 max_tokens 的请求**的兜底上限。kvmem 那个独立 server 上
+     * 它默认是 128，小得离谱 —— 任何绕过 dsh 的调用（curl、脚本、别的客户端）都只会吐 128 个 token。
+     */
+    nPredict: number;
+    /** 权重加载方式（-lm / --load-mode）：auto|none|mmap|mlock|mmap+mlock|dio。空串 = 不下发。 */
+    loadMode: string;
+    /** 频率惩罚（--frequency-penalty）；0 = 不下发（0 即不惩罚，与构建默认一致）。 */
+    frequencyPenalty: number;
+    /** MTP 草稿的 K/V 精度（--spec-kv-dtype）。空串 = 不下发。 */
+    specKvDtype: string;
+    /** MTP 单次草稿 token 数（--spec-draft-n-max）。负数 = 不下发。 */
+    specDraftNMax: number;
+    /** MTP 草稿最小接受概率（--spec-draft-p-min）。负数 = 不下发。 */
+    specDraftPMin: number;
+    /** GPU KV 缓存类型（--kv-dtype，kvmem 分支的合并写法，一次设 K 和 V）。空串 = 不下发。 */
+    kvDtype: string;
+    /** 视觉编码器放 GPU（true = 构造默认，不下发；false = 下发 --no-mmproj-offload 放 CPU）。 */
+    mmprojOffload: boolean;
+    /** 模板文件路径（--chat-template-file）。空串 = 不下发。 */
+    chatTemplateFile: string;
+    /** 模板默认参数（--chat-template-kwargs，JSON 文本）。空串 = 不下发。 */
+    chatTemplateKwargs: string;
+    /** 服务端默认推理档位（--reasoning-effort）。空串 = 不下发。 */
+    reasoningEffort: string;
+    /** 预算耗尽时注入的过渡语（--reasoning-budget-message）。空串 = 不下发。 */
+    reasoningBudgetMessage: string;
+    /**
+     * 是否启用 KVMem（true = 构建默认，不下发；false = 下发 --no-kvmem 退回普通 KV 缓存）。
+     */
+    kvmemEnabled: boolean;
+    /** GPU 工作集 token 数（--kvmem-budget）。负数 = 不下发（构建默认 0 = 等于 n_ctx）。 */
+    kvmemBudget: number;
+    /**
+     * 解码预留（--kvmem-gen-reserve）：**单次生成的上限**（含思考）。
+     *
+     * 🔴 这个构建的默认值只有 256 —— 也就是说不开这一项，每次回复最多只能生成 256 个 token。
+     * 负数 = 不下发。
+     */
+    kvmemGenReserve: number;
+    /** 检索块大小（--kvmem-block-tokens）。负数 = 不下发。 */
+    kvmemBlockTokens: number;
+    /** 常驻前缀 token 数（--kvmem-sink-tokens）。负数 = 不下发。 */
+    kvmemSinkTokens: number;
+    /** 常驻后缀 token 数（--kvmem-recent-tokens）。负数 = 不下发。 */
+    kvmemRecentTokens: number;
+    /** 选择算法：recency | retrieval（--kvmem-method）。空串 = 不下发。 */
+    kvmemMethod: string;
+    /** 检索查询取提示词末尾多少 token（--kvmem-query-last）。负数 = 不下发。 */
+    kvmemQueryLast: number;
+    /** 检索查询的上限 token 数（--kvmem-query-max-tokens）。负数 = 不下发。 */
+    kvmemQueryMaxTokens: number;
+    /** 查询重放模式：legacy | auto（--kvmem-query-replay）。空串 = 不下发。 */
+    kvmemQueryReplay: string;
+    /** 查询策略：legacy | user（--kvmem-query-policy）。空串 = 不下发。 */
+    kvmemQueryPolicy: string;
+    /** MTP 状态模式：snapshots | auto | replay（--kvmem-mtp-state）。空串 = 不下发。 */
+    kvmemMtpState: string;
+    /** 槽池占显存的比例上限（--kvmem-gpu-ratio，如 0.8）。负数 = 不下发（构建默认 0.50）。 */
+    kvmemGpuRatio: number;
+    /** CPU 溢出场大小 GiB（--kvmem-cpu-gb）。负数 = 不下发（构建默认 0 = 关闭）。 */
+    kvmemCpuGb: number;
+    /** NVMe 溢出场大小 GiB（--kvmem-nvme-gb）。负数 = 不下发（构建默认 0 = 关闭）。 */
+    kvmemNvmeGb: number;
+    /** NVMe 溢出场目录（--kvmem-nvme-dir）。空串 = 不下发。 */
+    kvmemNvmeDir: string;
+    /** 用原始 K 预填 V 到主机内存（--kvmem-harvest-v，裸开关）。 */
+    kvmemHarvestV: boolean;
+    /** 把原始 K 与 V 落到 NVMe（--kvmem-raw-k-nvme，需要 --kvmem-nvme-gb）。 */
+    kvmemRawKNvme: boolean;
     /** 采样参数：全部按配置显式下发（它们的默认值就是用户指定的值）。 */
     temp: number;
     topK: number;
@@ -80,10 +153,16 @@ export interface LlamaServerArgInput {
     /**
      * 多 Token 预测（MTP）：下发 `--spec-type draft-mtp`。
      *
-     * 与 `mmproj` **互斥** —— 互斥由本文件的拼参数层强制保证（见 buildLlamaServerArgs），
-     * 调用方即使两个都传了，也不可能拼出一条让 llama-server 加载失败的命令行。
+     * 与 `mmproj` 的关系由 `mtpWithVision` 决定 —— 上游 llama.cpp 里两者不能共存，
+     * 但 kvmem 分支的 llama-kvmem-server 可以（本机实测同时加载成功）。
      */
     mtp: boolean;
+    /**
+     * 允许 MTP 与视觉投影同时下发（默认开）。
+     *
+     * 关掉时恢复旧的互斥行为：MTP 生效、`--mmproj` 被忽略并给出说明。
+     */
+    mtpWithVision: boolean;
     mmap: boolean;
     mlock: boolean;
     apiKey: string;

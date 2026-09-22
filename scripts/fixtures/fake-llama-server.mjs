@@ -84,6 +84,22 @@ const server = http.createServer(async (req, res) => {
     }
     const model = payload.model ?? alias
 
+    /**
+     * 模拟 KVMem 那个独立 server 的严格上下文校验。
+     *
+     * 标准上游 llama.cpp 遇到 prompt + max_tokens 超出上下文只会打一条 warning 再自行收敛，
+     * 而 kvmem 分支改成硬拒绝 —— 这条差异正是插件里 contextGuard 存在的全部理由，
+     * 所以替身必须能复现它，否则「重试收敛」这条路径永远测不到。
+     * 报错原文照抄实机抓到的输出（连 JSON 形状都一样）。
+     */
+    const hardMaxTokens = Number(process.env.FAKE_HARD_MAX_TOKENS ?? '')
+    if (Number.isFinite(hardMaxTokens) && typeof payload.max_tokens === 'number' && payload.max_tokens > hardMaxTokens) {
+      const rejected = JSON.stringify({ error: 'prompt + max_tokens exceeds n_ctx' })
+      res.writeHead(400, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(rejected) })
+      res.end(rejected)
+      return
+    }
+
     if (payload.stream) {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
       res.write(`data: ${JSON.stringify({ id: 'cmpl-fake', model, choices: [{ delta: { content: 'FAKE_' } }] })}\n\n`)
@@ -102,6 +118,8 @@ const server = http.createServer(async (req, res) => {
       _echo: {
         chat_template_kwargs: payload.chat_template_kwargs ?? null,
         messages: payload.messages ?? null,
+        // 溢出保护会改写它，所以必须回显 —— 否则无从确认「压到多少才被接受」。
+        max_tokens: payload.max_tokens ?? null,
       },
     })
     res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })

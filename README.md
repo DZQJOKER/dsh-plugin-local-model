@@ -96,6 +96,7 @@
 - **0.4.0** — ① **新增 13 项设置**：KV 缓存策略 2 项（`kvUnified`、`kvStreamStageMib`，其中流式暂存是特定 llama.cpp 分支的私有参数）、采样参数 8 项（`temp` / `topK` / `topP` / `minP` / `presencePenalty` / `repeatPenalty` / `repeatLastN` / `seed`）、多模态与推理预算 3 项（`imageMinTokens` / `imageMaxTokens` / `reasoningBudget`）。这些参数现在会在每次加载时**显式下发并覆盖 llama.cpp 自身的默认值**（`temp` 0.8→0.75、`top-k` 40→20、`min-p` 0.05→0、`repeat-penalty` 1.1→1.0），设置页里逐项注明了差异。② **删除「接入 dsh」整组设置**（`routeName` / `modelAlias` / `routeModelId` / `contextWindow` / `registerRoute` / `exposeTool` / `allowModelControl`）：这 7 项改为 `configResolve.ts` 里的常量，取值沿用原默认值，**行为与默认安装完全一致但从此不可配置**。③ `maxTokens`（单次最大输出 tokens）保留，从「接入 dsh」挪进「推理参数」。④ 顺带修掉一处会静默毁掉小数设置的 bug：`clamp()` 内部有四舍五入，`temp 0.75` 会被它变成 `1`；小数项改用新的 `clampFloat()`。
 - **0.3.1** — 新增「多 Token 预测（MTP）」开关（`mtp`，**默认关闭**）。开启后加载时下发 `--spec-type draft-mtp`，用模型自带的预测头做投机解码，本地生成速度通常提升 1.2～2 倍。**开启 MTP 会自动禁用视觉投影文件（`--mmproj`）** —— 两者在 llama.cpp 里不能共存，强行一起下发会导致加载失败；这条互斥规则写在参数拼装层（`src/llama/args.ts`），只要 `mtp` 为真 `--mmproj` 就不可能漏下去，界面上对应的下拉框会立即置灰并在状态卡里说明原因。关掉 MTP 后用户选的 `mmprojFile` 不会被清空，只是暂时不生效。默认关闭，因此**升级后老部署的行为一字不变**。
 - **0.3.0** — 两项推理侧能力：① 推理参数新增「启用思考」「保留历史 think」两个开关，按 `chat_template_kwargs`（`enable_thinking` / `preserve_thinking`）在**每次请求**的请求体上下发，关闭「保留历史 think」时还会顺手剥掉历史 assistant 消息里的 `reasoning_content` / think 文本，让多轮上下文中不再堆积思考内容；② 模型与目录新增「视觉投影文件」选择项，可直接挑选 mmproj（加载时作为 `--mmproj` 下发），**留空即保持原有的「同目录自动关联」行为**。这两项开关走请求体而不是 llama-server 启动参数：旧构建只会忽略它，绝不会影响模型加载，也不必为切一次开关重启模型。
+- **0.7.1** — 取消版本闸门：删掉 `engines.dsh`，`@deepseek-ai/dsh-tools` 的 peer 范围由显式预发布分支回归 `"*"`。原先逐 minor 补 `|| ^X.Y.Z-0` 分支的做法在 harness 出新预发布时必然滞后，导致市场误判「与当前 DSH 不兼容」并弹崩溃警告。插件功能一字不变，兼容性交给宿主自行判定。
 - **0.2.3** — 发布准备：补 `repository` / `homepage` / `engines.dsh`；`peerDependencies` 从 `"*"` 改为显式的预发布分支（原来的 `*` 会静默匹配不到 harness 的 `-rc.x` 构建）；loader entry id 由裸 `local-model` 改为 `dzqjoker-local-model` 避免与其他插件撞车；去掉 `private` 与 `prepare`（产物随仓库发布，安装时不再需要构建）；补 `LICENSE`、`.gitignore`、`.gitattributes`；`PLUGIN_VERSION` 与 `package.json` 对齐。另修 `npm run verify`：它过去不读 DSH Desktop 的 `activeHome`，数据目录被搬走后会漏扫真正在用的 profile，报出「未安装本插件」的假结论。
 - **0.2.2** — 修复 CUDA OOM：新增 `gpuLayersMode`（auto / all / custom）。默认 `auto` 会下发 `-ngl auto`，让 llama.cpp 的 `--fit` 按可用显存自适应卸载 —— 之前默认把 `-ngl` 钉成 `-1` 跳过了这层保护，模型放不下时从「少放几层」变成「直接 OOM」。同时把失败日志翻译成可读诊断（fit-blocked-by-pinned-layers / cuda-oom / 形状不匹配 / 模型缺失 等十几种模式）。
 - **0.2.1** — 修复 `--flash-attn` 形状不匹配：老构建按裸 flag 发，参数解析器把下一个 token 当成它的值吃掉；新增能力探测与三态配置（auto / on / off），auto 永远不下发最安全。
@@ -924,19 +925,21 @@ dsh 的凭据/同步机制走。桥只服务回环来源 —— 通过局域网�
 }
 ```
 
-`engines.dsh` 是给市场/网站读的版本闸门（市场会把 `engines.dsh` 与 `@deepseek-ai/*` 的
-peer 范围一起收进兼容性卡片）。写它有个坑：**不带预发布分支的范围会静默匹配不到 harness
-的 `-rc.x` 构建** —— node-semver 只在范围里某个比较符与该版本的 `major.minor.patch`
-元组完全一致、且自身带预发布标签时才放行预发布版本。所以这里用显式的 `||` 分支：
+`engines.dsh` 与 `@deepseek-ai/dsh-tools` 的 peer 范围都**不再声明**，只留 `engines.node`。
 
-```json
-"engines": { "dsh": "^0.1.0-rc.1 || ^0.1.1-0 || ^0.1.2-0 || ^0.1.5-0" }
-```
+历史上这里写过显式的预发布分支（`^0.1.0-rc.1 || ^0.1.1-0 || ^0.1.2-0 || ^0.1.5-0`），
+原因是 node-semver 的一条规则：**范围里不含预发布标签的比较符不会匹配预发布版本** ——
+所以裸 `"*"` 反而匹配不到 harness 的 `-rc.x` 构建，必须逐个 minor 补 `|| ^X.Y.Z-0` 分支。
+但这条路是死胡同：harness 每出一个新 minor 预发布（例如 `0.2.0-rc.1`）就要补一个分支，
+漏补就会被市场判成「与当前 DSH 不兼容」并弹出崩溃警告，而插件本身其实照常工作 ——
+这是纯声明侧的维护成本，不是真实的功能依赖。
 
-harness 出一个新的 minor 预发布（例如 `0.1.6-rc.1`）时需要补一个分支，这是这类声明
-固有的维护成本。`peerDependencies` 同一处理：官方 `@deepseek-ai/*` 一律写进
-`peerDependencies`（而不是 `dependencies`），并全部标 `optional`。原来写的 `"*"` 看着最宽，
-实际受同一条 semver 规则影响**匹配不到任何 `-rc.x`**。
+现在改为**不设版本闸门**：删掉 `engines.dsh`，`dsh-tools` 的 peer 范围回归 `"*"`。
+插件对 harness 的耦合实际很弱，全部走运行时能力探测 —— `lib/tools.js` 对 `dsh-tools`
+是 `await import()` 且失败只告警跳过工具注册，客户端依赖走 `dsh.client.inject` 由宿主解析，
+没有任何一处硬编码 harness 版本号。因此版本上限交给宿主/市场自己去管，插件不再替它断言。
+官方 `@deepseek-ai/*` 仍一律写进 `peerDependencies`（而不是 `dependencies`），并全部标
+`optional`。
 
 `cordis.patch.yml` 里的 loader entry id 带作者前缀（`dzqjoker-local-model`），不用裸的
 `local-model`：cordis 拒绝加载含重复 entry id 的插件树，而插件市场一旦发现新装插件的 id

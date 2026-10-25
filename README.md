@@ -1,280 +1,275 @@
-![dsh-cost-meter 预览图](https://raw.github.com/DZQJOKER/dsh-plugin-local-model/main/images/仓库截图.png)
+![dsh-cost-meter preview image](https://raw.github.com/DZQJOKER/dsh-plugin-local-model/main/images/仓库截图.png)
 
 
 # dsh-plugin-local-model
 
-给 **DeepSeek Harness（dsh）** 用的本地模型插件：在设置里管理本地 GGUF 模型，
-**第一条对话自动拉起 llama.cpp 载入模型，连续 5 分钟无交互自动卸载并释放显存**；
-设置页顶部还有一块**参数预设**，把整套参数存成带名字的条目，一键切换。
+Local model plugin for **DeepSeek Harness (dsh)**: manage local GGUF models in the settings,
+**the first conversation auto-starts llama.cpp and loads the model, and after 5 consecutive minutes without interaction it auto-unloads and frees VRAM**;
+at the top of the settings page there is also a **parameter presets** block that saves the whole set of parameters as named entries with one-click switching.
 
-模型和 llama 工具由用户自己下载，放进插件规定的目录即可 —— 插件不联网拉模型、不碰工作区文件、
-除本机回环地址外不监听任何端口。
+Models and the llama tools are downloaded by the user themselves and placed in the directories prescribed by the plugin — the plugin does not fetch models over the network, does not touch workspace files,
+and listens on no ports other than the local loopback address.
 
-## 更新日志
+## Changelog
 
-- **0.7.0** — ① **修掉「装上视觉投影文件后一直报 400 `Failed to load image or audio file`」**。根因不在插件、也不在模型：llama.cpp 内置的图像解码器只认 png / jpeg / gif / bmp 这些老格式，**不认识 WebP**；遇到 WebP 它会去起外部的 `ffprobe` 探测、`ffmpeg` 转码，而这两个是从 **PATH** 里找的（这个构建砍掉了 `--ffmpeg-path`，只剩 PATH 一条路）。机器上没装 ffmpeg 时，服务端会打 `probe: failed to launch ffprobe` / `failed to decode webp buffer`，客户端拿到 400 —— 而**同一批里的 JPEG 却能正常识别**（dsh 转码时两种格式都会产出，实测 `.dsh/attachments/v1/request-images/` 下两种都有），所以表现是「时好时坏」，极易被当成插件或模型坏了。现在：**插件会自动找到 ffmpeg 并把它的目录前置进 llama-server 子进程的 PATH**（不必改系统 PATH、也不必为此重启 dsh），找不到且已开视觉时会打出一条说清「哪个格式会失败、为什么只有它、怎么修」的警告。装法：`winget install Gyan.FFmpeg`。
-  ② **MTP 与视觉投影从「互斥」改为「可共存」**（新增设置项 `mtpWithVision`，**默认开启**）。原规则来自上游 llama.cpp（两者同时下发会加载失败），但 **kvmem 分支的 `llama-kvmem-server` 实测支持**：同时给 `--mmproj` 与 `--spec-type draft-mtp` 时 `clip_model_loader: has vision encoder` 与 `creating MTP draft context` 会同时出现、服务正常起来、看图对话也能识别（2026-09-21 本机验证）。换回官方 llama.cpp 的用户把这个开关关掉即恢复旧的互斥行为（MTP 生效、`--mmproj` 被忽略并给出说明）。
-  ③ **设置页顶部新增「本次启动参数」面板**：把这次**真正下发给 llama-server 的完整命令行**逐项一行列出来（不是设置页里填的那一份 —— 两者之间隔着门控跳过、构建默认值与自动收敛），配一张参数摘要（含派生的「GPU KV 合计 = 工作集 + 解码预留」）、一条「复制命令行」按钮、以及**被跳过的选项**与**识别表没覆盖到的选项**（后者过去只躺在日志里）。刷新跟随运行状态轮询，换模型/改参数后自动更新。
+- **0.7.0** — ① **Fixed "after installing a vision projection file it keeps reporting 400 `Failed to load image or audio file`"**. The root cause is neither in the plugin nor in the model: llama.cpp's built-in image decoder only recognizes the old formats png / jpeg / gif / bmp and **does not recognize WebP**; on encountering WebP it tries to launch external `ffprobe` for probing and `ffmpeg` for transcoding, and these two are looked up from **PATH** (this build dropped `--ffmpeg-path`, leaving PATH as the only route). When ffmpeg is not installed on the machine, the server logs `probe: failed to launch ffprobe` / `failed to decode webp buffer` and the client receives a 400 — while **JPEG in the same batch is recognized normally** (dsh produces both formats when transcoding; in practice both are present under `.dsh/attachments/v1/request-images/`), so the symptom is "works sometimes, fails sometimes", easily mistaken for a broken plugin or model. Now: **the plugin automatically finds ffmpeg and prepends its directory to the PATH of the llama-server subprocess** (no system PATH change needed, no dsh restart needed for this); if it cannot be found while vision is enabled, a warning is emitted explaining "which format will fail, why only that one, and how to fix it". Install: `winget install Gyan.FFmpeg`.
+  ② **MTP and vision projection changed from "mutually exclusive" to "can coexist"** (new setting `mtpWithVision`, **enabled by default**). The original rule came from upstream llama.cpp (sending both at once fails to load), but **the kvmem branch's `llama-kvmem-server` is verified to support it**: when given both `--mmproj` and `--spec-type draft-mtp`, `clip_model_loader: has vision encoder` and `creating MTP draft context` appear simultaneously, the service starts normally, and image conversations are recognized (verified on this machine 2026-09-21). Users switching back to official llama.cpp should turn this toggle off to restore the old exclusive behavior (MTP active, `--mmproj` ignored with an explanation).
+  ③ **New "launch parameters for this run" panel at the top of the settings page**: lists item by item, one line per item, **the full command line actually sent to llama-server this time** (not what is filled in on the settings page — between the two there are gating skips, build defaults and auto-convergence), plus a parameter summary (including the derived "GPU KV total = working set + decode reserve"), a "Copy command line" button, and **skipped options** as well as **options not covered by the recognition table** (the latter used to only sit in the log). Refresh follows the runtime status polling; after changing model/parameters it updates automatically.
 
-- **0.6.0** — ① **补齐 kvmem 分支（`kvmem/kvmem-llama.cpp`）的全部缺失启动参数**，共 31 项：KVMem 家族 18 项（`--kvmem` / `--kvmem-budget` / **`--kvmem-gen-reserve`** / `--kvmem-block-tokens` / `--kvmem-sink-tokens` / `--kvmem-recent-tokens` / `--kvmem-method` / `--kvmem-query-last` / `--kvmem-query-max-tokens` / `--kvmem-query-replay` / `--kvmem-query-policy` / `--kvmem-mtp-state` / `--kvmem-gpu-ratio` / `--kvmem-cpu-gb` / `--kvmem-nvme-gb` / `--kvmem-nvme-dir` / `--kvmem-harvest-v` / `--kvmem-raw-k-nvme`）、外加 `-n/--n-predict`、`-lm/--load-mode`、`--kv-dtype`、`--spec-kv-dtype`、`--spec-draft-n-max`、`--spec-draft-p-min`、`--frequency-penalty`、`--mmproj-offload`、`--chat-template-file`、`--chat-template-kwargs`、`--reasoning-effort`、`--reasoning-budget-message`。**默认值一律是「不下发」**（数字项用 `-1` 当哨兵、字符串用空串），所以装官方 llama.cpp 的部署**行为一字不变**；kvmem 专有项走**严格门控**，探测不到就整体跳过并在日志里说明。
-  ② **新增「输出上限溢出保护」**（`guardContextOverflow`，默认开启）。上游 llama.cpp 遇到 `prompt + max_tokens > n_ctx` 只打一条 warning 再自行收敛，而 kvmem 那个独立 server 是**硬拒绝**：`HTTP 400 {"error":"prompt + max_tokens exceeds n_ctx"}` —— 报错里既没有 prompt 长度也没有 n_ctx，用户只能乱试。现在代理会先把「必然失败」（`max_tokens >= n_ctx`，任何非空提示词都放不下）的上限预防性压到 `n_ctx − 1024`，再对服务端明确拒绝的请求**逐级减半重试**（只缓冲 400，其余状态码照旧流式直通，正常对话零额外开销）；实在装不下时把原文换成一句带上真实 `n_ctx` 与最可能原因的中文说明。
-  ③ 新增**加载期配置一致性提醒**：`maxTokens` 不小于 `ctxSize`（本轮线上故障的根因）、超过一半、或 `--kvmem-gen-reserve` 小于单次输出上限时，加载日志里直接点明后果与建议值。
-  ④ 修掉一处**静默缺陷**：被跳过选项的汇总提示原先在采样参数之后就结算了，导致后面新增的每一项（`--kvmem-*` / `-n` / `-lm` …）被跳过后都不会出现在日志里。
-  ⑤ 新增「**KVMem 分块缓存**」与「**多 Token 预测（MTP）细节**」两个设置分组。
+- **0.6.0** — ① **Filled in all missing launch parameters of the kvmem branch (`kvmem/kvmem-llama.cpp`)**, 31 items total: the KVMem family, 18 items (`--kvmem` / `--kvmem-budget` / **`--kvmem-gen-reserve`** / `--kvmem-block-tokens` / `--kvmem-sink-tokens` / `--kvmem-recent-tokens` / `--kvmem-method` / `--kvmem-query-last` / `--kvmem-query-max-tokens` / `--kvmem-query-replay` / `--kvmem-query-policy` / `--kvmem-mtp-state` / `--kvmem-gpu-ratio` / `--kvmem-cpu-gb` / `--kvmem-nvme-gb` / `--kvmem-nvme-dir` / `--kvmem-harvest-v` / `--kvmem-raw-k-nvme`), plus `-n/--n-predict`, `-lm/--load-mode`, `--kv-dtype`, `--spec-kv-dtype`, `--spec-draft-n-max`, `--spec-draft-p-min`, `--frequency-penalty`, `--mmproj-offload`, `--chat-template-file`, `--chat-template-kwargs`, `--reasoning-effort`, `--reasoning-budget-message`. **All defaults are "do not send"** (numeric items use `-1` as a sentinel, strings use the empty string), so deployments with official llama.cpp have **not one word of behavior changed**; kvmem-specific items go through **strict gating** — if not detected, the whole group is skipped and explained in the log.
+  ② **New "output limit overflow protection"** (`guardContextOverflow`, enabled by default). Upstream llama.cpp on `prompt + max_tokens > n_ctx` only emits a warning and then converges on its own, while that standalone kvmem server is a **hard reject**: `HTTP 400 {"error":"prompt + max_tokens exceeds n_ctx"}` — the error contains neither prompt length nor n_ctx, so users can only guess. Now the proxy first preventively clamps "certainly failing" limits (`max_tokens >= n_ctx`, no non-empty prompt fits) down to `n_ctx − 1024`, then for requests explicitly rejected by the server **retries with halving step by step** (only 400 is buffered; any other status code continues streaming through as before, zero extra overhead for normal conversations); when it truly cannot fit, the original message is replaced with an explanation containing the real `n_ctx` and the most likely cause.
+  ③ New **load-time configuration consistency reminder**: when `maxTokens` is not greater than `ctxSize` (the root cause of this production incident), exceeds half, or `--kvmem-gen-reserve` is smaller than the single output limit, the load log directly names the consequence and a suggested value.
+  ④ Fixed one **silent defect**: the summary hint for skipped options was previously settled right after the sampling parameters, so every item added later (`--kvmem-*` / `-n` / `-lm` …) would not appear in the log after being skipped.
+  ⑤ New settings groups "**KVMem block cache**" and "**Multi-Token Prediction (MTP) details**".
 
-- **0.5.3** — 修掉「**换了一个 llama 分支，插件就起不来了**」。用户把可执行文件换成那个
-  `kvmem-v0.16.0-rc2` 的 `llama-kvmem-server.exe`（一个独立的 OpenAI 兼容 server，
-  选项表只是 llama.cpp 的真子集），加载直接失败：
-  `unknown flag: --alias` + usage + exit 1。根因是插件**固定下发**的一组选项里，
-  有一部分是这个分支根本没有的 —— 探测机制此前只门控了「新版本才有的」那 4 类选项
-  （`--kv-unified` / `--kv-stream-stage-mib` / `--image-*-tokens` / `--reasoning-budget`），
-  其余的（`--alias`、`-t`、`--threads-batch`、`-ub`、`--repeat-last-n`、`--no-mmap`、
-  `--mlock`、`--api-key`、采样参数那一组）一律照发。而这类分支对未知选项**不是忽略，是直接退出 1**，
-  且一次只报一个 —— 所以「只修 `--alias`」是不够的，下一个会是 `-ub`。
-  **修法**：把「只下发构建承认的选项」这条既有契约扩展到**全部**选项，并分成两档语义：
-  ① 只有新构建/特定分支才有的 → 严格门控（探测失败也不发，与原来一致）；
-  ② 其余 → 宽松门控（**探测失败照旧全量下发**，行为与历史完全一致；只有构建明确不公开某一项时才跳过那一项）。
-  被跳过的一律写进日志（`已跳过（不影响加载）：--alias、-ub、…`），绝不静默。
-  **另修一处同源故障**：`--seed` 的默认值是 `-1`（= 随机），而该分支按 uint32 校验，
-  收到 `-1` 直接 `invalid --seed: seed out of range [0, 4294967295]` 退出 ——
-  现在**负数一律不下发该参数**（与「随机」等价：llama.cpp 的默认值本来就是 `-1`），
-  一条规则同时满足标准构建（语义不变）与取值范围收窄的构建。
-  实机验收（用用户真实配置，模型换哨兵路径）：
-  ① kvmem 构建 —— 63 个选项被识别，命令行里再无未知项，实测参数全部通过；
-  ② `llama.mtp加速优化版`（405 个选项）—— 命令行与修复前**逐字一致**（只少了语义等价的 `--seed -1`），
-  参数全部通过。也就是说这一版对标准/近上游构建是零行为变化。
-  新增回归用例：`scripts/selftest.mjs` 里按 kvmem 的 `--help` 原文建了一组断言（含「下发出去的选项必须全被公开」），
-  `scripts/verify-llama.mjs` 补上 `unknown flag` / `invalid --xxx:` 两类判据（此前它会把这句漏判成「没有参数错误」）。
+- **0.5.3** — Fixed "**switch to a different llama branch and the plugin can no longer start**". The user swapped the executable for that `kvmem-v0.16.0-rc2` `llama-kvmem-server.exe` (a standalone OpenAI-compatible server whose option table is only a true subset of llama.cpp's), and loading failed outright:
+  `unknown flag: --alias` + usage + exit 1. The root cause was that part of the group of options the plugin **sends unconditionally** simply does not exist in this branch — the detection mechanism previously only gated the 4 kinds of "only present in newer versions" options
+  (`--kv-unified` / `--kv-stream-stage-mib` / `--image-*-tokens` / `--reasoning-budget`),
+  and all the rest (`--alias`, `-t`, `--threads-batch`, `-ub`, `--repeat-last-n`, `--no-mmap`,
+  `--mlock`, `--api-key`, that group of sampling parameters) were sent as usual. And this kind of branch, for unknown options, **does not ignore them but exits 1 directly**,
+  and reports only one at a time — so "just fix `--alias`" is not enough; the next will be `-ub`.
+  **Fix**: extend the existing contract of "only send options the build admits" to **all** options, split into two tiers of semantics:
+  ① Only present in new builds / specific branches → strict gating (do not send even if detection fails, same as before);
+  ② The rest → lenient gating (**if detection fails, send the full set as before**, behavior completely identical to history; only when the build explicitly does not expose an item is that one item skipped).
+  Everything skipped is written to the log (`Skipped (does not affect loading): --alias, -ub, …`), never silent.
+  **Also fixed a same-origin failure**: the default value of `--seed` is `-1` (= random), and this branch validates it as uint32;
+  receiving `-1` directly yields `invalid --seed: seed out of range [0, 4294967295]` and exits —
+  now **negative numbers never send this parameter** (equivalent to "random": llama.cpp's default was `-1` to begin with),
+  and one rule simultaneously satisfies the standard build (semantics unchanged) and builds with a narrowed value range.
+  Real-machine acceptance (with the user's real configuration, model swapped for a sentinel path):
+  ① kvmem build — 63 options recognized, no more unknown items in the command line, all measured parameters pass;
+  ② `llama.mtp-accelerated-optimized` (405 options) — the command line is **character-for-character identical** to before the fix (only the semantically equivalent `--seed -1` missing),
+  all parameters pass. In other words, this version has zero behavior change for standard / near-upstream builds.
+  New regression cases: in `scripts/selftest.mjs`, a group of assertions was built from the verbatim kvmem `--help` (including "every option sent must be publicly exposed"),
+  and `scripts/verify-llama.mjs` had two kinds of criteria added, `unknown flag` / `invalid --xxx:` (previously this sentence would be missed as "no parameter error").
 
-- **0.5.2** — 修掉设置页**透明重叠**。**0.5.1 的诊断是错的** —— 那三处几何问题确实存在、也确实修好了，
-  但它们不是用户看到「字压字」的原因。真正根因是**插件引用了 DSH 里根本不存在的 CSS 变量**：
-  插件整套用的是 `--color-background-primary` / `--color-border-tertiary` / `--color-text-primary`
-  这一组（Claude / Cursor 风格的通用 token），而宿主 DSH 只提供一套 `--dsw-*`
-  （全量扫 `app.asar` 的 21810 个文件，上述 `--color-*` 的**定义数都是 0**）。
-  `var(--x, fallback)` 在变量不存在时**静默**退回 fallback，于是：
-  ① `card` 与底部保存条的 fallback 写的是 `'transparent'` → **它们真的是透明的**，
-  下层「运行状态」卡片的文字（当前模型 / 进程 / 入口 / 模型总数 / 推理档位 / 多 Token 预测 / 视觉投影）
-  直接透上来；② 置顶预设条的 fallback 是 `'#fff'` → 浅色主题下**白底等于面板白底**，
-  眼睛看仍是「透明」；③ 输入框 / 下拉框的 `--color-background-secondary` 也落空到 `transparent`，
-  在卡片上是一块「看不见底」的区域；④ 深色主题下 `--color-text-primary` → `#111`，
-  主按钮变成黑底黑字。**修复**：颜色体系整体迁到 `--dsw-*`
-  （面板底 `--dsw-alias-bg-layer-2`，与宿主 `.MI-_Aa_panel` 同色；边框 `--dsw-alias-border-l1..l4`；
-  文字 `--dsw-alias-label-*`；语义色 `--dsw-alias-state-*`），并给所有「会挡住下层内容」的容器
-  补上不透明背景。**另修两处连带问题**：⑤ 置顶条与保存条的横向负 margin ——
-  `.options` 左右各有 24px 内边距，sticky 元素默认只盖内容区宽度，两侧那 24px 缝里滚过去的内容会直接露出来
-  （旧版保存条 `padding: '10px 0'` 时连上下都有 10px 缝，「当前模型」就是从这条缝里透出来的）；
-  ⑥ 状态徽章底色改用 `color-mix` 从前景色兑出，深色主题下不再出现「浅底浅字」。
-  `client/src/layoutCheck.js` 新增**变量白名单**与**透明度**两类断言，
-  并加了一条**反向验证**（拿有 bug 的坏样本必须报错）—— 因为这类探测最大的风险是
-  「规则永远不触发」的假阴性，那比没有规则更危险。
-- **0.5.1** — 修掉设置页**元素重叠**的几何成因（三处，都是「在某些屏幕宽度下才现形」的布局问题）。
-  根因是 Host 设置面板实测只有 **564px** 可用宽度（面板 800 − 左侧导航 188 − 内边距 48），
-  而客户端把内容区写成了 `maxWidth: 720`，**比可用宽度还宽 156px**：
-  ① 字段行是 `grid` 三列，第二列写的是裸 `1fr` —— grid 的自动最小尺寸默认 `auto`，
-  它**拒绝被压到输入框 min-content 以下**，于是可用宽度不足时第二列被挤到下一行、
-  「默认」按钮回到右侧，两行内容在视觉上叠在一起（`≤800px` 的面板必现，即任何笔记本）；
-  ② 置顶预设条的 `position: sticky` 包含块是滚动容器 `.options` 的**内边距盒**，
-  `top:0` 正好落在面板 32px 圆角上，滚起来会切掉卡片上沿、压住面板标题与关闭按钮；
-  ③ `.options` 的上内边距为 0 而 sticky 不认领它，卡片上方留下一条**能滚动的透明缝**，
-  下层卡片从缝里透出来。现在：内容区改为 `maxWidth: 100%`；三列全部 `minmax(0, …)`
-  并把控件都补上 `minWidth: 0`（字段行最小需求降到约 204px，480px 宽的窗口都富余）；
-  置顶条用**实色背景 + 顶部内边距 + `isolation: isolate`** 把自己封住，不再和面板抢层级。
-  另修：超长预设名会让 chip 把 `✎ / ×` 挤出卡片（现封顶 240px 并省略），
-  元信息网格的 `minmax(220px, 1fr)` 硬下限在窄面板下整块溢出（现 `minmax(0, 220px)`）。
-  **只改样式，不动任何组件结构、路由与交互**；新增 `client/src/layoutCheck.js` 把这几条
-  几何约束做成断言，`client-check` 会在常见分辨率下逐个验算「设置项一行排得下」。
-  ⚠️ 透明背景问题**不在**这一版的修复范围内，见 0.5.2。
-- **0.5.0** — 新增**参数预设**：把整套加载/推理参数（含选中的模型与视觉投影）存成带名字的条目，
-  可存多组、可重命名、可覆盖、可删除，点一下即切换。预设条固定在**设置页顶部**，
-  滚到参数区也能直接切。预设只收「参数」不收「环境」—— 端口、监听地址、模型/运行时目录、
-  密钥、日志级别这 9 项不进预设，切换预设不会动它们（否则切个参数预设会把端口也换掉）。
-  存储在 `<DSH_HOME>/local-model/state/presets.json`（与 `config.json` 同目录，独立成文件，
-  不污染既有配置）。**新增功能不动既有行为**：所有原设置项、按钮、请求改写、加载/卸载逻辑一字未改，
-  预设的应用路径就是「保存设置」那条路径（写入用户层 → 按新参数卸载 → 下次对话重载）。
-- **0.4.2** — 修掉「推理档位拨了会 500」。`0.4.1` 让 dsh 把档位写进 `chat_template_kwargs` 之后暴露了两个新问题：① 模型模板对**不认识的档位是直接 `raise_exception`**（实测这个模型只认 `xhigh`/`medium`/`low`），而插件把面板档位原样透传、dsh 还会把 `off` 发成布尔 `false` —— 一次对话直接 500；② 插件仍会在某些情形下**覆盖请求自己的档位选择**（开关关闭时把 High 也压成不思考）。现在：加载后**读模型模板解析出它支持的档位表**（日志与状态卡都会显示），面板档位按表重映射（`high → xhigh`）；映射不出来就不发这个字段；`false`/`null`/`true` 等形态一律归一化；开/关**以请求为准**，插件开关只在请求什么都没说时生效。
-- **0.4.1** — 修掉「dsh 的推理等级滑杆形同虚设」。两处成因，都修了：① 插件注册进 dsh 的路由 profile **没有声明这是推理模型**（缺 `reasoningEfforts`），pi-ai 因此什么思考参数都不发，滑杆只是个摆设；现在会声明 `compat.thinkingFormat = chat-template` 与七档映射，让 dsh 把档位写进 `chat_template_kwargs`（llama.cpp **唯一**认的通道）。② 插件的「启用思考」开关**无条件**把 `enable_thinking` 改写成 `true`，把 dsh 选的 Off 也顶掉了 —— 现在开关开启时只当**默认值**：请求里已经显式写了 `enable_thinking` 或带了档位就原样放行；关闭时仍是硬覆盖。另外代理会把顶层的 `reasoning_effort` **下沉**进 `chat_template_kwargs` —— 顶层字段会被 llama-server 静默丢掉（无报错、无日志），这是社区踩过的坑。
-- **0.4.0** — ① **新增 13 项设置**：KV 缓存策略 2 项（`kvUnified`、`kvStreamStageMib`，其中流式暂存是特定 llama.cpp 分支的私有参数）、采样参数 8 项（`temp` / `topK` / `topP` / `minP` / `presencePenalty` / `repeatPenalty` / `repeatLastN` / `seed`）、多模态与推理预算 3 项（`imageMinTokens` / `imageMaxTokens` / `reasoningBudget`）。这些参数现在会在每次加载时**显式下发并覆盖 llama.cpp 自身的默认值**（`temp` 0.8→0.75、`top-k` 40→20、`min-p` 0.05→0、`repeat-penalty` 1.1→1.0），设置页里逐项注明了差异。② **删除「接入 dsh」整组设置**（`routeName` / `modelAlias` / `routeModelId` / `contextWindow` / `registerRoute` / `exposeTool` / `allowModelControl`）：这 7 项改为 `configResolve.ts` 里的常量，取值沿用原默认值，**行为与默认安装完全一致但从此不可配置**。③ `maxTokens`（单次最大输出 tokens）保留，从「接入 dsh」挪进「推理参数」。④ 顺带修掉一处会静默毁掉小数设置的 bug：`clamp()` 内部有四舍五入，`temp 0.75` 会被它变成 `1`；小数项改用新的 `clampFloat()`。
-- **0.3.1** — 新增「多 Token 预测（MTP）」开关（`mtp`，**默认关闭**）。开启后加载时下发 `--spec-type draft-mtp`，用模型自带的预测头做投机解码，本地生成速度通常提升 1.2～2 倍。**开启 MTP 会自动禁用视觉投影文件（`--mmproj`）** —— 两者在 llama.cpp 里不能共存，强行一起下发会导致加载失败；这条互斥规则写在参数拼装层（`src/llama/args.ts`），只要 `mtp` 为真 `--mmproj` 就不可能漏下去，界面上对应的下拉框会立即置灰并在状态卡里说明原因。关掉 MTP 后用户选的 `mmprojFile` 不会被清空，只是暂时不生效。默认关闭，因此**升级后老部署的行为一字不变**。
-- **0.3.0** — 两项推理侧能力：① 推理参数新增「启用思考」「保留历史 think」两个开关，按 `chat_template_kwargs`（`enable_thinking` / `preserve_thinking`）在**每次请求**的请求体上下发，关闭「保留历史 think」时还会顺手剥掉历史 assistant 消息里的 `reasoning_content` / think 文本，让多轮上下文中不再堆积思考内容；② 模型与目录新增「视觉投影文件」选择项，可直接挑选 mmproj（加载时作为 `--mmproj` 下发），**留空即保持原有的「同目录自动关联」行为**。这两项开关走请求体而不是 llama-server 启动参数：旧构建只会忽略它，绝不会影响模型加载，也不必为切一次开关重启模型。
-- **0.7.1** — 取消版本闸门：删掉 `engines.dsh`，`@deepseek-ai/dsh-tools` 的 peer 范围由显式预发布分支回归 `"*"`。原先逐 minor 补 `|| ^X.Y.Z-0` 分支的做法在 harness 出新预发布时必然滞后，导致市场误判「与当前 DSH 不兼容」并弹崩溃警告。插件功能一字不变，兼容性交给宿主自行判定。
-- **0.2.3** — 发布准备：补 `repository` / `homepage` / `engines.dsh`；`peerDependencies` 从 `"*"` 改为显式的预发布分支（原来的 `*` 会静默匹配不到 harness 的 `-rc.x` 构建）；loader entry id 由裸 `local-model` 改为 `dzqjoker-local-model` 避免与其他插件撞车；去掉 `private` 与 `prepare`（产物随仓库发布，安装时不再需要构建）；补 `LICENSE`、`.gitignore`、`.gitattributes`；`PLUGIN_VERSION` 与 `package.json` 对齐。另修 `npm run verify`：它过去不读 DSH Desktop 的 `activeHome`，数据目录被搬走后会漏扫真正在用的 profile，报出「未安装本插件」的假结论。
-- **0.2.2** — 修复 CUDA OOM：新增 `gpuLayersMode`（auto / all / custom）。默认 `auto` 会下发 `-ngl auto`，让 llama.cpp 的 `--fit` 按可用显存自适应卸载 —— 之前默认把 `-ngl` 钉成 `-1` 跳过了这层保护，模型放不下时从「少放几层」变成「直接 OOM」。同时把失败日志翻译成可读诊断（fit-blocked-by-pinned-layers / cuda-oom / 形状不匹配 / 模型缺失 等十几种模式）。
-- **0.2.1** — 修复 `--flash-attn` 形状不匹配：老构建按裸 flag 发，参数解析器把下一个 token 当成它的值吃掉；新增能力探测与三态配置（auto / on / off），auto 永远不下发最安全。
-- **0.2.0** — 修复 dsh.bundle 声明形状 + 设置侧栏面板；新增浏览器半侧 bundle + 同源数据桥。
-- **0.1.0** — 初版：设置项 / 拉起 / 空闲卸载 / 路径约定 / 接入 dsh 路由。
+- **0.5.2** — Fixed **transparent overlap** on the settings page. **The diagnosis in 0.5.1 was wrong** — those three geometric problems did exist and were indeed fixed,
+  but they were not the cause of the user seeing "text overlapping text". The real root cause is that **the plugin referenced CSS variables that do not exist in DSH at all**:
+  the plugin as a whole uses the group `--color-background-primary` / `--color-border-tertiary` / `--color-text-primary`
+  (generic tokens in Claude / Cursor style), while host DSH only provides one set of `--dsw-*`
+  (a full scan of all 21810 files in `app.asar` shows the **definition count for the above `--color-*` is 0**).
+  When the variable does not exist, `var(--x, fallback)` **silently** falls back to the fallback, so:
+  ① The fallback written for `card` and the bottom save bar was `'transparent'` → **they really are transparent**,
+  and the text of the lower "runtime status" card (current model / process / entry / total models / reasoning tier / multi-token prediction / vision projection)
+  shows straight through; ② the pinned preset bar's fallback is `'#fff'` → in light theme **white background equals panel white background**,
+  to the eye it still looks "transparent"; ③ input box / dropdown `--color-background-secondary` also falls through to `transparent`,
+  becoming an area on the card where "the bottom cannot be seen"; ④ in dark theme `--color-text-primary` → `#111`,
+  and the main button becomes black-on-black. **Fix**: migrate the color system wholesale to `--dsw-*`
+  (panel background `--dsw-alias-bg-layer-2`, same color as host `.MI-_Aa_panel`; borders `--dsw-alias-border-l1..l4`;
+  text `--dsw-alias-label-*`; semantic colors `--dsw-alias-state-*`), and add opaque backgrounds to all containers that "cover lower content". **Also fixed two related problems**: ⑤ the horizontal negative margins of the pinned bar and save bar —
+  `.options` has 24px padding on left and right, sticky elements by default only cover the content area width, and in those 24px gaps on both sides, content that scrolls past shows directly
+  (the old save bar with `padding: '10px 0'` even had a 10px gap top and bottom, and "current model" was showing through from this gap);
+  ⑥ status badge background color is now mixed from the foreground color using `color-mix`, so in dark theme "light-on-light" no longer appears.
+  `client/src/layoutCheck.js` adds two kinds of assertions: **variable whitelist** and **transparency**,
+  plus one **reverse verification** (a bad sample with the bug must report an error) — because the biggest risk of this kind of probe is
+  a false negative where "the rule never fires", which is more dangerous than having no rule.
+- **0.5.1** — Fixed the geometric cause of **element overlap** on the settings page (three places, all layout problems that "only manifest at certain screen widths").
+  The root cause is that the Host settings panel has only **564px** usable width in measurement (panel 800 − left nav 188 − padding 48),
+  while the client wrote the content area as `maxWidth: 720`, **156px wider than the usable width**:
+  ① Field rows are a three-column `grid`, and the second column is written as bare `1fr` — grid's automatic minimum size defaults to `auto`,
+  which **refuses to be compressed below the input box's min-content**, so when usable width is insufficient, the second column is pushed to the next line,
+  the "Default" button returns to the right side, and two rows of content visually overlap (always occurs on panels `≤800px`, i.e. any laptop);
+  ② The containing block for the pinned preset bar's `position: sticky` is the **padding box** of the scroll container `.options`,
+  and `top:0` lands exactly on the panel's 32px rounded corner, so scrolling cuts off the top edge of the card and covers the panel title and close button;
+  ③ `.options`'s top padding is 0 and sticky does not claim it, leaving a **scrollable transparent gap** above the card,
+  through which the lower card shows. Now: content area changed to `maxWidth: 100%`; all three columns are `minmax(0, …)`
+  and all controls have `minWidth: 0` added (field row minimum requirement dropped to about 204px, even a 480px-wide window has room);
+  the pinned bar seals itself with **opaque background + top padding + `isolation: isolate`**, no longer competing with the panel for layering.
+  Also fixed: overly long preset names push the chip's `✎ / ×` out of the card (now capped at 240px with ellipsis),
+  and the metadata grid's `minmax(220px, 1fr)` hard floor overflows the whole block on narrow panels (now `minmax(0, 220px)`).
+  **Only styles changed; no component structure, routing, or interaction touched at all**; new `client/src/layoutCheck.js` turns these
+  geometric constraints into assertions, and `client-check` verifies one by one at common resolutions that "settings items fit on one line".
+  ⚠️ The transparent background problem is **not** in this version's fix scope; see 0.5.2.
+- **0.5.0** — New **parameter presets**: save the whole set of load/inference parameters (including the selected model and vision projection) as named entries;
+  multiple groups can be saved, renamed, overwritten, deleted; one click switches. The preset bar is fixed at the **top of the settings page**,
+  and you can switch directly even when scrolled to the parameter area. Presets only collect "parameters", not "environment" — the 9 items port, listen address, model/runtime directories,
+  keys, log level do not go into presets; switching presets does not touch them (otherwise switching a parameter preset would also change the port).
+  Storage is at `<DSH_HOME>/local-model/state/presets.json` (same directory as `config.json`, an independent file,
+  does not pollute existing configuration). **New features do not touch existing behavior**: all original settings items, buttons, request rewrites, load/unload logic are not one word changed;
+  the preset application path is the same path as "Save Settings" (write user layer → unload with new parameters → reload on next conversation).
+- **0.4.2** — Fixed "toggling the reasoning tier causes 500". After `0.4.1` made dsh write the tier into `chat_template_kwargs`, two new problems were exposed: ① The model template **directly `raise_exception`s on unrecognized tiers** (in practice this model only recognizes `xhigh`/`medium`/`low`), and the plugin passes the panel tier through as-is, and dsh even sends `off` as boolean `false` — one conversation directly 500; ② The plugin in some situations **still overwrites the request's own tier selection** (when the toggle is off, it also presses High down to no-thinking). Now: after loading, **read the model template and parse out the table of tiers it supports** (shown in both log and status card), remap the panel tier by the table (`high → xhigh`); if it cannot be mapped, do not send this field; normalize all forms like `false`/`null`/`true`; on/off **defers to the request**, and the plugin toggle only takes effect when the request says nothing.
+- **0.4.1** — Fixed "dsh's reasoning level slider is a mere decoration". Two causes, both fixed: ① The route profile the plugin registered with dsh **did not declare this is a reasoning model** (missing `reasoningEfforts`), so pi-ai sends no thinking parameters at all and the slider is just decoration; now it declares `compat.thinkingFormat = chat-template` and a seven-tier mapping, letting dsh write the tier into `chat_template_kwargs` (the **only** channel llama.cpp recognizes). ② The plugin's "Enable thinking" toggle **unconditionally** rewrote `enable_thinking` to `true`, even overwriting the Off that dsh chose — now when the toggle is on it only acts as a **default value**: if the request already explicitly writes `enable_thinking` or carries a tier, pass it through as-is; when off it is still a hard overwrite. In addition, the proxy **sinks** top-level `reasoning_effort` into `chat_template_kwargs` — top-level fields are silently discarded by llama-server (no error, no log), a pitfall the community has stepped in.
+- **0.4.0** — ① **13 new settings**: 2 KV cache policy items (`kvUnified`, `kvStreamStageMib`, of which streaming staging is a private parameter of a specific llama.cpp branch), 8 sampling parameters (`temp` / `topK` / `topP` / `minP` / `presencePenalty` / `repeatPenalty` / `repeatLastN` / `seed`), 3 multimodal and reasoning budget items (`imageMinTokens` / `imageMaxTokens` / `reasoningBudget`). These parameters are now **explicitly sent on every load, overriding llama.cpp's own defaults** (`temp` 0.8→0.75, `top-k` 40→20, `min-p` 0.05→0, `repeat-penalty` 1.1→1.0), and the differences are noted item by item on the settings page. ② **Deleted the entire "dsh integration" settings group** (`routeName` / `modelAlias` / `routeModelId` / `contextWindow` / `registerRoute` / `exposeTool` / `allowModelControl`): these 7 items became constants in `configResolve.ts`, values following the original defaults, **behavior completely identical to default installation but no longer configurable from now on**. ③ `maxTokens` (maximum output tokens per run) is retained, moved from "dsh integration" into "inference parameters". ④ Also fixed a bug that would silently destroy decimal settings: `clamp()` has rounding inside, and `temp 0.75` would become `1`; decimal items now use the new `clampFloat()`.
+- **0.3.1** — New "Multi-Token Prediction (MTP)" toggle (`mtp`, **off by default**). When enabled, loading sends `--spec-type draft-mtp`, using the model's built-in prediction head for speculative decoding; local generation speed usually improves 1.2–2x. **Enabling MTP automatically disables the vision projection file (`--mmproj`)** — the two cannot coexist in llama.cpp, and forcing them together leads to load failure; this mutual exclusion rule is written in the parameter assembly layer (`src/llama/args.ts`), so as long as `mtp` is true, `--mmproj` can never leak through; the corresponding dropdown on the UI immediately grays out, and the status card explains the reason. After turning off MTP, the user-chosen `mmprojFile` is not cleared, it just temporarily does not take effect. Off by default, so **after upgrade, old deployments have zero behavior change**.
+- **0.3.0** — Two inference-side capabilities: ① Inference parameters add two toggles "Enable thinking" and "Preserve historical think", sent in the request body of **every request** via `chat_template_kwargs` (`enable_thinking` / `preserve_thinking`); when "Preserve historical think" is off, it also strips `reasoning_content` / think text from historical assistant messages, so thinking content no longer accumulates in multi-turn context; ② Models and directories add a "Vision projection file" selection item, where you can directly pick an mmproj (sent as `--mmproj` on load); **leaving it empty preserves the original "same-directory auto-association" behavior**. These two toggles go through the request body rather than llama-server launch parameters: old builds will only ignore them, never affect model loading, and there is no need to restart the model just to flip a toggle.
+- **0.7.1** — Removed version gate: deleted `engines.dsh`, and the peer range of `@deepseek-ai/dsh-tools` reverts from an explicit pre-release branch to `"*"`. The original practice of adding `|| ^X.Y.Z-0` branches per minor is inevitably delayed when the harness releases a new pre-release, causing the marketplace to misjudge "incompatible with current DSH" and pop up a crash warning. Plugin features are not one word changed; compatibility is left for the host to decide.
+- **0.2.3** — Release preparation: added `repository` / `homepage` / `engines.dsh`; `peerDependencies` changed from `"*"` to an explicit pre-release branch (the original `*` would silently fail to match the harness's `-rc.x` builds); loader entry id changed from bare `local-model` to `dzqjoker-local-model` to avoid collision with other plugins; removed `private` and `prepare` (artifacts are published with the repo, no build needed at install time); added `LICENSE`, `.gitignore`, `.gitattributes`; aligned `PLUGIN_VERSION` with `package.json`. Also fixed `npm run verify`: it previously did not read DSH Desktop's `activeHome`, so after the data directory was moved it would miss scanning the profile actually in use and report a false conclusion of "this plugin is not installed".
+- **0.2.2** — Fixed CUDA OOM: new `gpuLayersMode` (auto / all / custom). The default `auto` sends `-ngl auto`, letting llama.cpp's `--fit` adaptively offload based on available VRAM — previously the default pinned `-ngl` to `-1`, skipping this layer of protection, and when the model did not fit it went from "place fewer layers" to "direct OOM". At the same time, failure logs are translated into readable diagnostics (fit-blocked-by-pinned-layers / cuda-oom / shape mismatch / model missing, a dozen or so patterns).
+- **0.2.1** — Fixed `--flash-attn` shape mismatch: old builds sent it as a bare flag, and the argument parser ate the next token as its value; new capability detection and three-state configuration (auto / on / off); auto never sends, which is always the safest.
+- **0.2.0** — Fixed dsh.bundle declaration shape + settings sidebar panel; new browser half-side bundle + same-origin data bridge.
+- **0.1.0** — Initial version: settings items / launch / idle unload / path conventions / dsh route integration.
 
 ---
 
-## 1. 需求 → 实现对照
+## 1. Requirements → Implementation mapping
 
-| 需求 | 落点 |
+| Requirement | Where it lands |
 | --- | --- |
-| ① 设置里新增独立「本地模型」配置项，可选模型、可填启动参数 | **设置侧栏一级页面**：`src/config.ts` 的 schemastery `Config`（唯一真源）+ `src/webBridge.ts`（数据面）+ `client/`（浏览器半侧面板）。字段说明见 [第 4 节](#4-设置页与设置项) |
-| ② 用户自行下载 llama 工具与模型，存入插件规定目录 | `src/paths.ts` 定义目录约定并在首次运行时写入放置说明；`scripts/fetch-llama.mjs` 可选一键下载 |
-| ③ 选定模型后首条对话自动拉起并载入 | `src/proxy.ts`（常驻轻量入口）+ `src/lifecycle.ts` 的 `ensureReady()` 单飞加载 |
-| ④ 连续 5 分钟无交互自动卸载释放资源 | `idleUnloadMinutes`（默认 5）；判定规则抽成纯函数 `shouldUnload()`，`src/lifecycle.ts` |
-| ⑤ **参数预设**：存多组带名字的参数、固定在页面顶部、一键应用 | `src/presets.ts`（独立落盘 `state/presets.json` + 作用域定义）+ `webBridge.ts` 的 5 条 `/presets/*` 路由 + 浏览器侧 `client/src/presets.jsx`（顶部预设条）。见 [第 4 节](#参数预设050-新增) |
+| ① A new independent "Local model" configuration item in settings, selectable model, fillable launch parameters | **Settings sidebar top-level page**: schemastery `Config` in `src/config.ts` (single source of truth) + `src/webBridge.ts` (data plane) + `client/` (browser half-side panel). See [Section 4](#4-settings-page-and-settings-items) for field descriptions |
+| ② User downloads llama tools and models themselves, stored in plugin-prescribed directories | `src/paths.ts` defines directory conventions and writes placement instructions on first run; `scripts/fetch-llama.mjs` is an optional one-click download |
+| ③ After model selection, the first conversation auto-launches and loads | `src/proxy.ts` (resident lightweight entry) + `ensureReady()` single-flight load in `src/lifecycle.ts` |
+| ④ Auto-unload after 5 consecutive minutes without interaction to free resources | `idleUnloadMinutes` (default 5); the decision rule is extracted into a pure function `shouldUnload()`, `src/lifecycle.ts` |
+| ⑤ **Parameter presets**: save multiple named parameter groups, fixed at the top of the page, one-click apply | `src/presets.ts` (independent persistence to `state/presets.json` + scope definition) + 5 `/presets/*` routes in `webBridge.ts` + browser-side `client/src/presets.jsx` (top preset bar). See [Section 4](#parameter-presets-new-in-050) |
 
-「不占资源」是硬指标：**没有对话时磁盘上只有一个常驻 HTTP 代理进程（不加载模型、不占显存）**，
-llama-server 只在第一个请求进来时才被 spawn。这一条有端到端测试兜底（见第 9 节）。
+"Does not occupy resources" is a hard metric: **when there is no conversation, there is only one resident HTTP proxy process on disk (no model loaded, no VRAM occupied)**,
+and llama-server is spawned only when the first request comes in. This has an end-to-end test as backstop (see Section 9).
 
 ---
 
-## 2. 安装
+## 2. Installation
 
 ```bash
-# 1) 装进 profile —— 这一步同时写入依赖 + 把它登记进 dsh.profile.bundles
+# 1) Install into profile — this step also writes dependencies + registers it in dsh.profile.bundles
 dsh plugin --profile desktop add github:DZQJOKER/dsh-plugin-local-model
-#    本地开发时改成本地路径：
+#    For local development, change to a local path:
 #    dsh plugin --profile desktop add D:/path/to/dsh-plugin-local-model
 
-# 2) 重启 dsh —— bundle 组合在启动时固定，装/卸插件都必须重启（刷浏览器不生效）
+# 2) Restart dsh — bundle composition is fixed at startup; installing/uninstalling plugins always requires a restart (refreshing the browser has no effect)
 ```
 
-装完打开 **设置 → 本地模型**，就能看到独立的配置组。
+After installation, open **Settings → Local model** and you will see the independent configuration group.
 
-### 从 GitHub 安装不需要在用户机器上构建
+### Installing from GitHub does not require building on the user's machine
 
-本仓库**已包含预构建产物** —— `lib/`（宿主半侧）与 `client/client.js`（浏览器半侧）。
-包里刻意**没有 `prepare` 脚本**：pnpm 对 git 依赖默认拒绝执行构建脚本，会以
-`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`（`needs to execute build scripts but is not in the
-"allowBuilds" allowlist`）在物化之前就中止安装。产物入库 + 去掉 `prepare`，这条路才是通的。
+This repository **already contains pre-built artifacts** — `lib/` (host half-side) and `client/client.js` (browser half-side).
+The package intentionally has **no `prepare` script**: pnpm by default refuses to execute build scripts for git dependencies, aborting installation before materialization with
+`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` (`needs to execute build scripts but is not in the
+"allowBuilds" allowlist`). Artifacts in the repo + removing `prepare` — that is the only way this path works.
 
-代价是**改了 `src/` 或 `client/src/` 之后必须重新 `npm run build` 再提交**，
-否则用户装到的是上一次的产物。改完用 `npm test` 跑一遍（它会先 `build` 再自查）。
+The cost is that **after changing `src/` or `client/src/`, you must re-run `npm run build` before committing**,
+otherwise users will install the previous artifacts. After changes, run `npm test` once (it first `build`s and then self-checks).
 
-### 装完先自查一次
+### Self-check after installation
 
 ```bash
 npm run verify
 ```
 
-它会检查两件事：本包是不是一个**合法的 dsh bundle**，以及它在哪些 profile 里**装了却没生效**。
-后者正是插件管理页显示「已安装，未生效」的成因，输出长这样：
+It checks two things: whether this package is a **valid dsh bundle**, and in which profiles it is **installed but not active**.
+The latter is exactly the cause of the plugin management page showing "installed, not active"; the output looks like this:
 
 ```
-A. bundle 清单
+A. Bundle manifest
   ✓ dsh.bundle.patch = ./cordis.patch.yml
-  ✓ patch 的 name 是包名：dsh-plugin-local-model
-B. profile 挂载状态
-  ✗ desktop → 已安装为依赖，但不在 dsh.profile.bundles 里（这就是「已安装，未生效」）
+  ✓ patch name is package name: dsh-plugin-local-model
+B. Profile mount status
+  ✗ desktop → installed as dependency, but not in dsh.profile.bundles (this is "installed, not active")
 ```
 
-### 为什么必须声明 `dsh.bundle`
+### Why `dsh.bundle` must be declared
 
-dsh 的安装机制建立在两个 manifest 概念上，都写在 `package.json` 的 `dsh` 字段里：
+dsh's installation mechanism is built on two manifest concepts, both written in the `dsh` field of `package.json`:
 
-| 概念 | 是什么 | 声明方式 |
+| Concept | What it is | How to declare |
 | --- | --- | --- |
-| **bundle** | 一个附带配置层的 npm 包，说明「这个包贡献什么」 | `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }` |
-| **client** | 浏览器半侧（设置界面、面板、卡片） | `"dsh": { "client": { "inject": [...], "platform": "web" } }` + `exports["./client"]` |
-| **profile** | `$DSH_HOME/profiles/` 下的目录，说明「这套配置由哪些 bundle 按什么顺序组成」 | profile 自己的 `dsh.profile.bundles` |
+| **bundle** | An npm package with a configuration layer, explaining "what this package contributes" | `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }` |
+| **client** | Browser half-side (settings UI, panels, cards) | `"dsh": { "client": { "inject": [...], "platform": "web" } }` + `exports["./client"]` |
+| **profile** | A directory under `$DSH_HOME/profiles/`, explaining "which bundles compose this configuration in what order" | The profile's own `dsh.profile.bundles` |
 
-**没有 `dsh.bundle` 的包照样能装上，但只会作为普通依赖存在，dsh 不会激活它贡献的任何层。**
-这个设计是给「被别的插件包 import、而不是供用户直接启用」的库用的；对一个要直接启用的插件来说，
-漏掉这个字段就等于白装。声明形状写错（比如写成字符串 `"bundle": "包名"`）和没写是同一个后果。
+**A package without `dsh.bundle` can still be installed, but it only exists as an ordinary dependency; dsh will not activate any layer it contributes.**
+This design is for libraries that are "imported by other plugin packages, not directly enabled by users"; for a plugin that should be directly enabled,
+missing this field is the same as installing in vain. Declaring the shape wrong (e.g. writing string `"bundle": "package-name"`) has the same consequence as not writing it.
 
-**宿主侧的 `Config` schema 只负责配置的读写，不会自己长出界面。** dsh 设置侧栏的每一项都是
-一个客户端 UI 插件贡献的，所以要让「本地模型」出现在设置里，必须另外提供浏览器半侧
-（`dsh.client` + lazy-CJS factory 形式的 bundle）。官方 `dsh-client-ui-settings-plugins` 的文档把这句
-写得很直白：
+**The host-side `Config` schema is only responsible for reading and writing configuration; it does not grow a UI by itself.** Every item in dsh's settings sidebar is
+contributed by a client UI plugin, so to make "Local model" appear in settings, you must separately provide the browser half-side
+(a bundle in the form of `dsh.client` + lazy-CJS factory). The official `dsh-client-ui-settings-plugins` documentation states this very plainly:
 
-> 卡片仍然需要一份浏览器 bundle：浏览器半侧必须是按客户端模块系统的 lazy-CJS factory 格式构建的
-> `dsh.client` 包，而产出它的 `clientBundle` 预设位于 `packages/client/tsdown.client.ts`，
-> **并非已发布的包，因此本仓库之外的插件得自行复刻该构建**。
+> A card still needs a browser bundle: the browser half-side must be built as a lazy-CJS factory format
+> `dsh.client` package following the client module system, and the `clientBundle` preset that produces it is in `packages/client/tsdown.client.ts`,
+> **not a published package, so plugins outside this repo must replicate the build themselves**.
 
-本插件的复刻方式是 `scripts/build-client.mjs`（esbuild 打包 + 手工套上 `window.__ModuleLoader__.load`
-外壳），并由 `scripts/client-check.mjs` 用假 loader 真跑一遍来保证格式没跑偏。
+This plugin's replication is `scripts/build-client.mjs` (esbuild bundling + manually wrapping with a `window.__ModuleLoader__.load`
+shell), and `scripts/client-check.mjs` runs it once with a fake loader to ensure the format does not drift.
 
-配置层的叠加顺序是：profile 里各 bundle 的 patch（按声明顺序）→ profile 自己的 `cordis.patch.yml`
-→ `$DSH_HOME/cordis.patch.yml` → 命令行 `--patch`。**后一层覆盖前一层，且是整块替换 config 而不是深合并。**
+The layering order of configuration layers is: each bundle's patch in the profile (in declaration order) → the profile's own `cordis.patch.yml`
+→ `$DSH_HOME/cordis.patch.yml` → command line `--patch`. **Later layers override earlier ones, and it is whole-block replacement of config, not deep merge.**
 
-## 3. 放模型和 llama 工具
+## 3. Placing models and llama tools
 
-首次运行插件会建好目录并放入说明文件：
+On first run, the plugin creates the directories and places instruction files:
 
 ```
-$DSH_HOME/local-model/            # Windows 默认 C:\Users\<你>\.dsh\local-model
-├── models/                       # ← 把 GGUF 放这里（可建子目录）
+$DSH_HOME/local-model/            # Windows default C:\Users\<you>\.dsh\local-model
+├── models/                       # ← Put GGUF here (subdirectories allowed)
 │   └── PUT_GGUF_MODELS_HERE.txt
-├── runtime/                      # ← 把 llama.cpp 解压到这里（可放在一层子目录里）
+├── runtime/                      # ← Unzip llama.cpp here (can be placed in one level of subdirectory)
 │   └── PUT_LLAMA_RUNTIME_HERE.txt
-└── state/                        # 插件自管：pid、日志、设置与预设，不用管
-    ├── config.json               # 设置页保存的用户层配置
-    └── presets.json              # 参数预设（0.5.0 起；一组都没存过时这个文件不存在）
+└── state/                        # Plugin self-managed: pid, logs, settings and presets — don't worry about it
+    ├── config.json               # User layer configuration saved by the settings page
+    └── presets.json              # Parameter presets (since 0.5.0; this file does not exist if no group has ever been saved)
 ```
 
-**llama 工具**：去 <https://github.com/ggml-org/llama.cpp/releases> 下载对应平台的包，解压到 `runtime/`
-（NVIDIA 选 `win-cuda-x64`，无独显选 `win-cpu-x64`，macOS 选 `macos-arm64`）。
-也可以让脚本代劳：
+**llama tools**: download the package for the corresponding platform from <https://github.com/ggml-org/llama.cpp/releases> and unzip to `runtime/`
+(NVIDIA choose `win-cuda-x64`, no discrete GPU choose `win-cpu-x64`, macOS choose `macos-arm64`).
+You can also let a script do it:
 
 ```bash
-node scripts/fetch-llama.mjs                 # 自动判断平台与后端
-node scripts/fetch-llama.mjs --variant=cuda  # 指定后端：cuda / vulkan / hip / cpu
-node scripts/fetch-llama.mjs --dry-run       # 只预览要下载哪个包
+node scripts/fetch-llama.mjs                 # Auto-detect platform and backend
+node scripts/fetch-llama.mjs --variant=cuda  # Specify backend: cuda / vulkan / hip / cpu
+node scripts/fetch-llama.mjs --dry-run       # Only preview which package to download
 ```
 
-**模型**：下载 `.gguf` 放进 `models/`。插件支持三种布局，全自动识别：
+**Models**: download `.gguf` and put it in `models/`. The plugin supports three layouts, all auto-detected:
 
-- 单文件：`Qwen3-8B-Q4_K_M.gguf`
-- 分片：`xxx-00001-of-00003.gguf` ×3 —— 会自动归并成一个模型，**缺片会明确提示而不是加载半截模型**
-- 视觉：同目录放 `mmproj-*.gguf` —— 只在能确定归属时自动关联（宁可漏配，不可错配）；
-  目录里有多个模型/多个投影文件而自动关联不出来时，去 **设置 → 本地模型 → 视觉投影文件** 手动选一个即可。
+- Single file: `Qwen3-8B-Q4_K_M.gguf`
+- Shards: `xxx-00001-of-00003.gguf` ×3 — automatically merged into one model; **missing shards produce an explicit prompt rather than loading a half model**
+- Vision: place `mmproj-*.gguf` in the same directory — auto-associated only when ownership can be determined (better to miss than to mis-associate);
+  if there are multiple models / multiple projection files in the directory and auto-association cannot resolve it, just go to **Settings → Local model → Vision projection file** and pick one manually.
 
-放好后回 **设置 → 本地模型** 点「重新扫描」，在下拉框里选模型。
+After placing, return to **Settings → Local model**, click "Rescan", and select the model from the dropdown.
 
-## 4. 设置页与设置项
+## 4. Settings page and settings items
 
-### 面板在哪
+### Where is the panel
 
-重启 dsh 后，打开 **设置**，侧栏会出现一级条目 **「本地模型」**（排在「通用设置 / 模型」之后）。
-面板里依次是：
+After restarting dsh, open **Settings**; a top-level entry **"Local model"** appears in the sidebar (after "General settings / Models").
+The panel contains, in order:
 
-- **参数预设**（`0.5.0` 起，置顶那块）：点名字即应用，`✎` 改名，`×` 删除，输入框 + 「保存为预设」新建，
-  应用过之后还能「用当前参数更新「X」」。见 [下面单独一节](#参数预设050-新增)。
-- **运行状态**：状态徽标（待机 / 加载中 / 已就绪 / 已卸载 / 失败）、当前模型、进程 pid、入口地址、
-  预计自动卸载时间、最近一次错误；配「重新扫描 / 立即加载 / 卸载 / 刷新状态」按钮。
-- **模型下拉框**：列出模型目录里扫到的全部 GGUF，带量化、参数量、体积、是否分片完整、是否含视觉投影。
-  分片不完整的会置灰并在文案里说明。
-- **六个参数分组**：模型与目录 / 服务与端口 / 推理参数 / 采样与 KV 缓存 / 加载与卸载 / 诊断与高级。
-  每个字段都带中文说明，**文案与默认值直接来自 `src/config.ts` 的 schema**，字段被改过的会标「已覆盖」，
-  旁边有「默认」按钮可单独恢复。
-- **目录约定**：模型目录、运行时目录、用户配置文件三个绝对路径，照着放文件即可。
-- **底部**：保存 / 放弃修改 / 恢复默认；未保存项数会实时标出。
+- **Parameter presets** (since `0.5.0`, the pinned block at the top): click a name to apply, `✎` to rename, `×` to delete, input box + "Save as preset" to create new;
+  after applying you can also "Update 'X' with current parameters". See [a separate section below](#parameter-presets-new-in-050).
+- **Runtime status**: status badge (idle / loading / ready / unloaded / failed), current model, process pid, entry address,
+  expected auto-unload time, most recent error; with "Rescan / Load now / Unload / Refresh status" buttons.
+- **Model dropdown**: lists all GGUFs scanned from the model directory, with quantization, parameter count, size, shard completeness, presence of vision projection.
+  Incomplete shards are grayed out and explained in the text.
+- **Six parameter groups**: Models and directories / Service and port / Inference parameters / Sampling and KV cache / Loading and unloading / Diagnostics and advanced.
+  Every field has a description; **the text and default values come directly from the schema in `src/config.ts`**; fields that have been changed are marked "overridden",
+  with a "Default" button next to them for individual restoration.
+- **Directory conventions**: three absolute paths — model directory, runtime directory, user configuration file — just place files accordingly.
+- **Bottom**: Save / Discard changes / Restore defaults; the number of unsaved items is shown in real time.
 
-面板是**数据驱动**的：字段列表、类型、默认值、说明全部由宿主把 schema 序列化后送过来
-（`Config.toJSON()` → `src/schemaForm.ts`），因此往 `config.ts` 加一个字段，界面上会自动出现。
-两个例外是**需要下拉框**的字段（`selectedModel` 选模型、`mmprojFile` 选视觉投影文件）——
-选项来自扫描结果、schema 表达不了，所以由客户端特判渲染，其余字段一律自动出现。
+The panel is **data-driven**: field list, types, default values, descriptions are all sent by the host after serializing the schema
+(`Config.toJSON()` → `src/schemaForm.ts`), so adding a field to `config.ts` automatically appears in the UI.
+Two exceptions are fields that **need a dropdown** (`selectedModel` for model selection, `mmprojFile` for vision projection file selection) —
+options come from scan results and cannot be expressed in the schema, so the client renders them specially; all other fields appear automatically.
 
-### 布局约束（0.5.1 起，改样式前必读）
+### Layout constraints (since 0.5.1, must read before changing styles)
 
-设置面板**可用宽度只有 564px**，这是量出来的、不是估的：
+The settings panel has **only 564px usable width**; this is measured, not estimated:
 
 ```
-宿主 .panel    width: 800px（max-width: calc(100vw - 48px)）
-左导航 .nav    width: 188px（flex:none）
+Host .panel    width: 800px (max-width: calc(100vw - 48px))
+Left nav .nav    width: 188px (flex:none)
 .options        padding: 0 24px 24px
-                ────────────────────────────────
-内容区          800 − 188 − 48 = 564px
+                 ────────────────────────────────
+Content area          800 − 188 − 48 = 564px
 ```
 
-因此客户端样式有两条硬约束，`scripts/client-check.mjs` 会逐条断言（`client/src/layoutCheck.js`
-里是规则本体，新增样式遇到同类问题时往里加一条）：
+Therefore the client styles have two hard constraints, asserted one by one by `scripts/client-check.mjs` (the rule body is in `client/src/layoutCheck.js`;
+when new styles hit the same kind of problem, add a line there):
 
-1. **不写死超过可用宽度的 `maxWidth`。** 内容区用 `maxWidth: '100%'`。
-2. **凡是 flex / grid 里的容器，一律 `minWidth: 0`，列宽用 `minmax(0, …)`。**
-   grid 的自动最小尺寸默认是 `auto`（= 不小于内容最小宽度），裸 `1fr` 于是拒绝压缩 ——
-   可用宽度不足时会把格子挤到下一行，和相邻元素在视觉上重叠。这条踩过一次：
-   字段行 `minmax(140px, 190px) 1fr auto` 的最小需求约 420px，面板 ≤800px 时必现。
+1. **Do not write a `maxWidth` exceeding the usable width.** The content area uses `maxWidth: '100%'`.
+2. **Any container inside flex / grid gets `minWidth: 0`, and column widths use `minmax(0, …)`.**
+   Grid's automatic minimum size defaults to `auto` (= not smaller than the content's minimum width), so bare `1fr` refuses to compress —
+   when usable width is insufficient, cells get pushed to the next line and visually overlap adjacent elements. This has been stepped in once:
+   field row `minmax(140px, 190px) 1fr auto` minimum requirement about 420px, always occurs on panels ≤800px.
 
-置顶那条 `position: sticky` 另有三点必须一起满足（原因写在 `styles.js` 的 `cardPinned` 注释里）：
-不透明背景（遮住下层内容）、横向盖满 `.options` 的 24px 内边距（两侧不留缝）、
-`isolation: isolate`（自建层叠上下文，不与面板标题栏抢层级）。
+The pinned `position: sticky` bar has three more points that must be satisfied together (reasons written in the `cardPinned` comment in `styles.js`):
+opaque background (cover lower content), horizontally covering `.options`' 24px padding (no gap on either side),
+`isolation: isolate` (build own stacking context, do not compete with panel title bar for layering).
 
-### 颜色变量：只能用 `--dsw-*`（0.5.2 起，血泪条款）
+### Color variables: only `--dsw-*` allowed (since 0.5.2, a clause written in blood)
 
-**DSH 里不存在任何 `--color-*` 变量。** 宿主 `@deepseek-ai/dsh-client-ui-theme` 只定义一套 `--dsw-*`：
+**There are no `--color-*` variables at all in DSH.** Host `@deepseek-ai/dsh-client-ui-theme` only defines one set of `--dsw-*`:
 
 ```
 --dsw-alias-bg-base / bg-layer-1|2|3 / bg-overlay / bg-mask-1
@@ -283,640 +278,639 @@ node scripts/fetch-llama.mjs --dry-run       # 只预览要下载哪个包
 --dsw-alias-button-primary-fill|hover / button-ghost-active-fill|border
 --dsw-alias-interactive-bg-hover
 --dsw-alias-state-error|success|warn-primary / -secondary / -tertiary
---dsw-static-neutral-bluish-{00,50,60,75,100,…,1000} 等静态色板
+--dsw-static-neutral-bluish-{00,50,60,75,100,…,1000} and other static palettes
 ```
 
-写完 `var(--color-background-primary, 'transparent')` 这种代码时，**不会有任何报错、任何警告** ——
-变量不存在，`var()` 直接退回 fallback，而 fallback 是手写的、很容易写成 `transparent`。
-症状就是「元素是透明的、下层文字透上来」，然后你会去怀疑 `z-index`、`position`、
-层叠上下文……**全都不对**，因为根本没东西被画出来。
+After writing code like `var(--color-background-primary, 'transparent')`, **there will be no error, no warning** —
+the variable does not exist, `var()` falls back directly to the fallback, and the fallback is hand-written and easily written as `transparent`.
+The symptom is "elements are transparent, lower text shows through", and then you start suspecting `z-index`, `position`,
+stacking context…… **all wrong**, because nothing is being drawn at all.
 
-三条规则（`client-check.mjs` 会拦）：
+Three rules (blocked by `client-check.mjs`):
 
-1. **只用 `--dsw-*` / `--font-*` / `--dsh-*`**，其余前缀一律视为宿主不提供。
-2. **会挡住下层内容的容器（`card` / `cardPinned` / `footer`）背景必须不透明。**
-   面板底统一用 `--dsw-alias-bg-layer-2` —— 宿主 `.MI-_Aa_panel` 自己就是这个值，
-   两边同色才能让 sticky 元素「融进」面板、看不出接缝。
-3. **sticky 条要盖满 `.options` 的横向内边距**：`marginLeft/Right: -24` + `paddingLeft/Right: 24`。
-   否则卡片两侧各留 24px 缝，滚动时下层内容会从缝里穿过去。
+1. **Only use `--dsw-*` / `--font-*` / `--dsh-*`**; any other prefix is considered not provided by the host.
+2. **Containers that cover lower content (`card` / `cardPinned` / `footer`) must have opaque backgrounds.**
+   Panel background uniformly uses `--dsw-alias-bg-layer-2` — host `.MI-_Aa_panel` itself is this value;
+   only when both sides are the same color can sticky elements "blend into" the panel without a visible seam.
+3. **Sticky bars must cover `.options`' horizontal padding**: `marginLeft/Right: -24` + `paddingLeft/Right: 24`.
+   Otherwise a 24px gap remains on each side of the card, and during scrolling lower content passes through the gap.
 
-> 排查这类问题的通用手法：从 `app.asar` 全量扫变量定义（`find.mjs` / `pick.mjs` 在
-> `D:\日常工作区\_dev-tools\dsh-asar-tools\`）。只要某变量在 21810 个文件里出现次数为 0，
-> 它就是**不存在**，代码里每一次 `var()` 都在走 fallback。
+> General method for troubleshooting this kind of problem: scan variable definitions from the full `app.asar` (`find.mjs` / `pick.mjs` are in
+> `D:\日常工作区\_dev-tools\dsh-asar-tools\`). As long as a variable appears 0 times among 21810 files,
+> it **does not exist**, and every `var()` in the code is walking the fallback.
 
-### 参数预设（0.5.0 新增）
+### Parameter presets (new in 0.5.0)
 
-设置页**最上面**那一块，用 `position: sticky` 钉在顶部：下面几十项参数是用来调的，
-切换整套参数时不该还让你滚回页面顶端去找按钮。
+The block at the **very top** of the settings page, pinned to the top with `position: sticky`: the dozens of parameters below are for tuning,
+and when switching the whole set of parameters, you should not have to scroll back to the top of the page to find the button.
 
-| 操作 | 怎么做 |
+| Operation | How to do it |
 | --- | --- |
-| 新建 | 输入名字（回车或点「保存为预设」）。名字最长 40 字，重名会被拒绝（不区分大小写），最多 100 组 |
-| 应用 | **点预设名**。按新参数卸载模型，下次对话重新加载 —— 与「保存设置」同一条路径、同一个后果 |
-| 重命名 / 删除 | 预设上的 `✎` / `×`。删一组参数不影响当前生效的设置 |
-| 更新某一组 | 应用过之后，会出现「用当前参数更新「X」」——把界面上这套参数写回它，名字不变 |
-| 看差异 | 每个预设上标着「N 项不同」，与当前生效配置完全一致的那个标「当前生效」并高亮 |
+| Create new | Enter a name (Enter or click "Save as preset"). Name max 40 characters, duplicates rejected (case-insensitive), max 100 groups |
+| Apply | **Click the preset name**. Unload the model with new parameters, reload on next conversation — same path and same consequence as "Save Settings" |
+| Rename / Delete | `✎` / `×` on the preset. Deleting a parameter group does not affect currently active settings |
+| Update one group | After applying, "Update 'X' with current parameters" appears — writes this set of parameters from the UI back to it, name unchanged |
+| See differences | Each preset is marked "N items different"; the one completely identical to the currently active configuration is marked "currently active" and highlighted |
 
-**哪些设置会进预设，哪些不会：**
+**Which settings go into presets, which do not:**
 
-| | 字段 | 为什么 |
+| | Fields | Why |
 | --- | --- | --- |
-| ✅ 进预设（41 项） | 当前模型、视觉投影文件、MTP、上下文长度、GPU 层数、线程/批大小、Flash Attention、KV 精度与策略、8 项采样参数、图像 token 预算、推理预算、三个思考开关、Jinja/模板、mmap/mlock、附加参数、环境变量、空闲卸载与超时重试、单次最大输出 | 这些就是「一套参数」的内容。像「看图」这种预设，本来就该连同模型一起切过去 |
-| ❌ 不进预设（9 项） | `enabled`、`modelsDir`、`runtimeDir`、`llamaServerPath`、`host`、`port`、`llamaPort`、`apiKey`、`logLevel` | 这些属于**这台机器**而不是**这套参数**：端口和别的服务是否占用有关、路径是部署环境、密钥不该在预设文件里再存一份明文、日志级别是排查时的临时开关。切个参数预设却把端口换掉，只会是事故 |
+| ✅ Into presets (41 items) | Current model, vision projection file, MTP, context length, GPU layers, threads/batch size, Flash Attention, KV precision and policy, 8 sampling parameters, image token budget, reasoning budget, three thinking toggles, Jinja/template, mmap/mlock, extra parameters, environment variables, idle unload and timeout retry, single maximum output | These are the content of "a set of parameters". A preset like "image viewing" should originally switch along with the model |
+| ❌ Not into presets (9 items) | `enabled`, `modelsDir`, `runtimeDir`, `llamaServerPath`, `host`, `port`, `llamaPort`, `apiKey`, `logLevel` | These belong to **this machine**, not **this set of parameters**: ports are related to whether other services occupy them, paths are deployment environment, keys should not be stored in plaintext again in the preset file, log level is a temporary switch for troubleshooting. Switching a parameter preset but changing the port would only be an incident |
 
-作用域由 `src/presets.ts` 的 `PRESET_EXCLUDED_KEYS` 唯一定义，界面上的说明文案也来自同一处
-（宿主把 `keys` / `excluded` 一起送进 `/state`），不存在两边各写一份而漂移的可能。
+The scope is uniquely defined by `PRESET_EXCLUDED_KEYS` in `src/presets.ts`, and the description text on the UI also comes from the same place
+(the host sends `keys` / `excluded` together into `/state`), so there is no possibility of writing one copy on each side and drifting.
 
-**两条交互规则值得知道：**
+**Two interaction rules worth knowing:**
 
-1. **保存的是界面上当前这套参数**，含还没保存的修改 —— 界面会写明「含 N 项还没保存的修改」。
-   数字框被清空时按「未设置」处理（回落成已保存的值），不会写成 0；
-2. **应用预设会丢弃未保存的草稿**，所以有草稿时会先弹一次确认；应用成功后草稿清空 ——
-   否则界面上会留下一堆「未保存」的假象。
+1. **What is saved is the current set of parameters on the UI**, including unsaved changes — the UI states "includes N unsaved changes".
+   When a number box is cleared, it is treated as "unset" (falls back to the saved value), not written as 0;
+2. **Applying a preset discards unsaved drafts**, so if there is a draft, a confirmation pops up first; after successful application the draft is cleared —
+   otherwise a bunch of fake "unsaved" impressions would remain on the UI.
 
-预设落在 `<DSH_HOME>/local-model/state/presets.json`，与 `config.json` 同目录但**独立成文件**：
-一份配置 + 若干套可切换的参数，互不干扰。文件损坏、内容离谱（缺名字、缺 id、重复 id、一项参数都没有）
-都只会**降级成「没有预设」并在面板上说明**，绝不影响模型加载这条主线 —— 它只是便利功能。
+Presets are stored at `<DSH_HOME>/local-model/state/presets.json`, same directory as `config.json` but **an independent file**:
+one configuration + several switchable parameter sets, not interfering with each other. File corruption, unreasonable content (missing name, missing id, duplicate id, no parameter items at all)
+only **degrades to "no presets" and is explained on the panel**, never affecting the main line of model loading — it is just a convenience feature.
 
-### 设置的三个层级
+### Three layers of settings
 
-沿用 dsh 自己的三层语义，用户层落在插件目录里：
+Following dsh's own three-layer semantics, the user layer lands in the plugin directory:
 
 ```
-schema 默认值  →  组合层（cordis.patch.yml / 部署配置）  →  <DSH_HOME>/local-model/state/config.json
+schema defaults  →  composition layer (cordis.patch.yml / deployment configuration)  →  <DSH_HOME>/local-model/state/config.json
 ```
 
-面板保存写入的是最上层那个文件；「恢复默认」清空它，于是回落到组合层 + schema 默认值。
-浏览器发来的 JSON 只按 `src/configStore.ts` 里的类型表做强制转换，表里没有的键一律丢弃 ——
-界面写不进一条会污染 llama-server 命令行的脏数据。
+What the panel saves writes to the topmost file; "Restore defaults" clears it, falling back to composition layer + schema defaults.
+The JSON sent by the browser is only coerced according to the type table in `src/configStore.ts`; keys not in the table are all discarded —
+the UI cannot write dirty data that would pollute the llama-server command line.
 
-**「应用预设」写的是同一个文件、过的是同一道闸门**：预设值先按作用域过滤（见上一节），
-再走 `ConfigStore.update()` —— 于是「点预设」与「点保存」在落盘、卸载、提示三件事上完全一致，
-不存在两套逻辑各跑各的可能。预设文件本身也不豁免：`presets.json` 里的值读回来时同样过一遍闸门，
-手改配置文件塞进去的脏数据不会跑到命令行上。
+**"Apply preset" writes to the same file and passes through the same gate**: preset values are first filtered by scope (see previous section),
+then go through `ConfigStore.update()` — so "clicking a preset" and "clicking save" are completely identical in persistence, unloading, and prompting;
+there is no possibility of two sets of logic each running their own. The preset file itself is not exempt: values read back from `presets.json` also pass through the gate once;
+dirty data hand-edited into the configuration file will not reach the command line.
 
-> 为什么不用 dsh 的 settings 命名空间：当前 dsh 版本的 settings apiproxy 只服务硬编码的命名空间白名单，
-> 第三方插件的命名空间一律答复 `settings-not-exposed`，浏览器侧既读不到也写不进。
-> 自建一条同源 HTTP 桥（`/api/local-model`，注册在宿主 webServer 上）是这一版宿主上唯一可靠的通道。
+> Why not use dsh's settings namespace: the current dsh version's settings apiproxy only serves a hardcoded namespace whitelist,
+> third-party plugin namespaces are uniformly answered with `settings-not-exposed`, and the browser side can neither read nor write.
+> Building one's own same-origin HTTP bridge (`/api/local-model`, registered on the host webServer) is the only reliable channel on this version of the host.
 
-### 桥的安全姿态
+### Bridge security posture
 
-本机工具、没有账号体系，所以靠三条硬约束而不是鉴权：
+Local tool, no account system, so relying on three hard constraints rather than authentication:
 
-1. **只接受回环来源的请求** —— 配置变更与进程启停不该被局域网里的谁触发（`/presets/*` 也一样）；
-2. **写操作要求 `content-type: application/json`** —— 普通表单跨站提交做不到这一点，
-   于是即便有恶意页面在浏览器里跑，也发不出能改配置的请求；
-3. 请求体有大小上限。
+1. **Only accept requests from loopback origin** — configuration changes and process start/stop should not be triggered by anyone on the LAN (`/presets/*` too);
+2. **Write operations require `content-type: application/json`** — ordinary cross-site form submission cannot do this,
+   so even if a malicious page is running in the browser, it cannot send requests that can change configuration;
+3. Request body has a size limit.
 
-因此：**通过局域网/远程 Web UI 访问 dsh 时，这个面板会被拒绝**（这是刻意的）。本地模型本来就是本机能力。
+Therefore: **when accessing dsh via LAN / remote Web UI, this panel will be rejected** (this is intentional). Local models are inherently local capabilities.
 
-### 字段一览
+### Field overview
 
-类型、默认值与说明都写在设置面板里，这里只列关键分组：
+Types, default values, and descriptions are all written in the settings panel; here only the key groups are listed:
 
-| 分组 | 关键字段 |
+| Group | Key fields |
 | --- | --- |
-| 模型与目录 | `enabled`、`selectedModel`、`mmprojFile`（视觉投影文件）、**`mtp`（多 Token 预测，开启后自动禁用视觉投影）**、**`imageMinTokens` / `imageMaxTokens`（每张图的 token 预算下限/上限）**、`modelsDir`、`runtimeDir`、`llamaServerPath`、`preload` |
-| 服务与端口 | `host`（默认只听回环）、`port`（默认 18080）、`llamaPort`（默认 0 = 每次自动挑空闲端口） |
-| 推理参数 | `ctxSize`、**`maxTokens`（单次最大输出 tokens）**、**`nPredict`（服务端默认输出上限）**、**`guardContextOverflow`（输出上限溢出保护，默认开）**、`gpuLayers`、`loadMode`、`threads`、`batchSize`/`ubatchSize`、`flashAttention`、`mmprojOffload`、**`mtpWithVision`（MTP 与视觉共存，默认开）**、**`reasoningBudget`（推理 token 预算）**、`reasoningBudgetMessage`、`reasoningEffort`、`jinja`、`chatTemplate`、`chatTemplateFile`、`chatTemplateKwargs`、`enableThinking`、`preserveThinking`、`mmap`、`mlock` |
-| 多 Token 预测（MTP）细节 | `specKvDtype`、`specDraftNMax`、`specDraftPMin`（只在开了上面「多 Token 预测（MTP）」时生效） |
-| KVMem 分块缓存（kvmem 分支专有） | `kvmemEnabled`、`kvmemBudget`、**`kvmemGenReserve`（解码预留 = 单次生成上限，构建默认仅 256）**、`kvmemBlockTokens`、`kvmemSinkTokens`、`kvmemRecentTokens`、`kvmemMethod`、`kvmemQueryLast`、`kvmemQueryMaxTokens`、`kvmemQueryReplay`、`kvmemQueryPolicy`、`kvmemMtpState`、`kvmemGpuRatio`、`kvmemCpuGb`、`kvmemNvmeGb`、`kvmemNvmeDir`、`kvmemHarvestV`、`kvmemRawKNvme`。**整组默认值都是「不下发」**（数字 `-1`、字符串留空）；官方 llama.cpp 构建上会被整体跳过并记日志 |
-| **采样与 KV 缓存** | **`kvUnified`（统一 KV 缓存）**、**`kvStreamStageMib`（KV 主机内存暂存 MiB）**、**`temp`、`topK`、`topP`、`minP`、`presencePenalty`、`repeatPenalty`、`repeatLastN`、`seed`** |
-| 加载与卸载 | `idleUnloadMinutes`（默认 5）、`startupTimeoutMs`、`shutdownGraceMs`、`autoRestart`、`maxRestarts` |
-| 诊断与高级 | `apiKey`、`extraArgs`、`envOverrides`、`logLevel`（排查加载问题设 `debug`） |
+| Models and directories | `enabled`, `selectedModel`, `mmprojFile` (vision projection file), **`mtp` (multi-token prediction; enabling automatically disables vision projection)**, **`imageMinTokens` / `imageMaxTokens` (token budget floor/ceiling per image)**, `modelsDir`, `runtimeDir`, `llamaServerPath`, `preload` |
+| Service and port | `host` (default listens only on loopback), `port` (default 18080), `llamaPort` (default 0 = auto-pick a free port each time) |
+| Inference parameters | `ctxSize`, **`maxTokens` (maximum output tokens per run)**, **`nPredict` (server-side default output limit)**, **`guardContextOverflow` (output limit overflow protection, on by default)**, `gpuLayers`, `loadMode`, `threads`, `batchSize`/`ubatchSize`, `flashAttention`, `mmprojOffload`, **`mtpWithVision` (MTP and vision coexist, on by default)**, **`reasoningBudget` (reasoning token budget)**, `reasoningBudgetMessage`, `reasoningEffort`, `jinja`, `chatTemplate`, `chatTemplateFile`, `chatTemplateKwargs`, `enableThinking`, `preserveThinking`, `mmap`, `mlock` |
+| Multi-Token Prediction (MTP) details | `specKvDtype`, `specDraftNMax`, `specDraftPMin` (only effective when the above "Multi-Token Prediction (MTP)" is on) |
+| KVMem block cache (kvmem branch exclusive) | `kvmemEnabled`, `kvmemBudget`, **`kvmemGenReserve` (decode reserve = single generation limit; build default only 256)**, `kvmemBlockTokens`, `kvmemSinkTokens`, `kvmemRecentTokens`, `kvmemMethod`, `kvmemQueryLast`, `kvmemQueryMaxTokens`, `kvmemQueryReplay`, `kvmemQueryPolicy`, `kvmemMtpState`, `kvmemGpuRatio`, `kvmemCpuGb`, `kvmemNvmeGb`, `kvmemNvmeDir`, `kvmemHarvestV`, `kvmemRawKNvme`. **All defaults in the whole group are "do not send"** (numeric `-1`, strings left empty); on official llama.cpp builds they are skipped as a whole and logged |
+| **Sampling and KV cache** | **`kvUnified` (unified KV cache)**, **`kvStreamStageMib` (KV host memory staging MiB)**, **`temp`, `topK`, `topP`, `minP`, `presencePenalty`, `repeatPenalty`, `repeatLastN`, `seed`** |
+| Loading and unloading | `idleUnloadMinutes` (default 5), `startupTimeoutMs`, `shutdownGraceMs`, `autoRestart`, `maxRestarts` |
+| Diagnostics and advanced | `apiKey`, `extraArgs`, `envOverrides`, `logLevel` (set to `debug` when troubleshooting loading problems) |
 
-> 原先还有一组「接入 dsh」（`routeName` / `modelAlias` / `routeModelId` / `contextWindow` /
-> `registerRoute` / `exposeTool` / `allowModelControl`）。`0.4.0` 起这一组**已从 schema 删除**，
-> 改为 `src/configResolve.ts` 里的常量（取值 = 原默认值），因此行为不变但不再可配置。
-> 详见 [第 4 节「接入 dsh 那些设置去哪了」](#接入-dsh-那些设置去哪了)。
+> There was originally a group of "dsh integration" (`routeName` / `modelAlias` / `routeModelId` / `contextWindow` /
+> `registerRoute` / `exposeTool` / `allowModelControl`). Since `0.4.0`, this group has **been removed from the schema**,
+> becoming constants in `src/configResolve.ts` (values = original defaults), so behavior is unchanged but no longer configurable.
+> See [Section 4 "Where did the dsh integration settings go"](where-did-the-dsh-integration-settings-go).
 
-保存后模型会被卸载一次，下次对话按新参数重新加载 —— 用户刚改完设置，期望的就是这个行为。
+After saving, the model is unloaded once, and the next conversation reloads with new parameters — the user just changed settings, and this is exactly the behavior expected.
 
-### 插件会先探测你的 llama.cpp 再拼参数
+### The plugin first probes your llama.cpp before assembling parameters
 
-同一个参数在不同版本的 llama.cpp 里形状会变。最典型的是 `--flash-attn`：
+The same parameter changes shape in different versions of llama.cpp. The most typical is `--flash-attn`:
 
-| 构建 | 形状 | 插件怎么发 |
+| Build | Shape | How the plugin sends it |
 | --- | --- | --- |
-| 新（如 b10822） | `-fa, --flash-attn [on|off|auto]` 带值 | `--flash-attn on` / `--flash-attn off` |
-| 老 | `-fa, --flash-attn` 裸开关 | `--flash-attn`（仅当设为 `on`） |
+| New (e.g. b10822) | `-fa, --flash-attn [on|off|auto]` with value | `--flash-attn on` / `--flash-attn off` |
+| Old | `-fa, --flash-attn` bare switch | `--flash-attn` (only when set to `on`) |
 
-**如果不探测就直接按老形状发裸 flag，新构建的参数解析器会把下一个 token 当成它的值吃掉**，
-报出来的却是 `unknown value for --flash-attn: '--mmproj'` —— 错误信息指向被吞掉的那个参数，
-排查方向会完全跑偏。
+**If you do not probe and directly send a bare flag in the old shape, the new build's argument parser will eat the next token as its value**,
+and what is reported is `unknown value for --flash-attn: '--mmproj'` — the error message points to the swallowed parameter,
+and the troubleshooting direction goes completely off.
 
-所以插件在起进程前先跑一次 `--help`，问清楚两件事：**这个构建认识哪些选项**、
-**`--flash-attn` 是哪种形状**（结果按可执行文件缓存，每次加载只付一次代价）。顺带得到两个好处：
+So the plugin first runs `--help` before starting the process, asking two things: **which options this build recognizes**,
+**what shape `--flash-attn` is in** (results are cached per executable; each load only pays the cost once). Two side benefits:
 
-- **不认识的选项不会被发出去**（见「换了一个 llama 分支也能起来」一节）——
-  不少分支对未知选项是直接 `unknown flag: xxx` + exit 1，不是忽略；
-- 万一探测结果与实际不符（或探测失败导致下发形状不对），服务报错后插件会**自动去掉这个参数重试一次**，
-  并把「已改为不下发」写进日志 —— 不必让用户去猜。
+- **Unrecognized options are not sent** (see the "switching to a different llama branch also starts" section) —
+  many branches directly `unknown flag: xxx` + exit 1 for unknown options, not ignore them;
+- In case the probe result does not match reality (or detection failure causes the sent shape to be wrong), after the service reports an error the plugin **automatically removes this parameter and retries once**,
+  and writes "changed to not send" into the log — no need for the user to guess.
 
-`flashAttention` 因此是三态而不是开关：**`auto`（默认）永远不下发该参数**。因为 `auto` 在所有支持三态的构建里
-都等于默认值，在只支持裸开关的老构建里又根本表达不出来 —— 不下发是唯一在两种构建上语义都正确的做法。
-历史配置里的 `true/false` 会自动收敛成 `on/off`。
+`flashAttention` is therefore three-state, not a switch: **`auto` (default) never sends this parameter**. Because `auto` in all builds supporting three states
+equals the default value, and in old builds that only support bare switches it cannot be expressed at all — not sending is the only semantically correct approach on both kinds of builds.
+Historical configurations' `true/false` automatically converge to `on/off`.
 
-> 另外：较新的 llama.cpp 已把 `--mlock` / `--no-mmap` 标记为 DEPRECATED（建议改用 `--load-mode`），
-> 但两者仍然可用，插件继续沿用；将来若被移除（或换了不带它们的构建），门控会直接跳过并点名。
+> In addition: newer llama.cpp has marked `--mlock` / `--no-mmap` as DEPRECATED (recommending use of `--load-mode`),
+> but both are still usable, and the plugin continues to use them; if they are removed in the future (or a build without them is used), gating will skip directly and name them.
 
-### 多 Token 预测（MTP）
+### Multi-Token Prediction (MTP)
 
-`0.3.1` 新增，**默认关闭**。开启后加载时下发 `--spec-type draft-mtp`，让模型用它**自带的预测头**
-一次猜测并校验多个 token（投机解码），本地生成速度通常能提升 1.2～2 倍，回复越长越明显。
+New in `0.3.1`, **off by default**. When enabled, loading sends `--spec-type draft-mtp`, letting the model use its **built-in prediction head**
+to guess and verify multiple tokens at once (speculative decoding); local generation speed usually improves 1.2–2x, more obvious for longer replies.
 
-**MTP 与视觉投影的关系见下一节「MTP 与视觉共存」** —— `0.7.0` 起两者默认可以同时开启，
-互斥规则只有在关掉 `mtpWithVision` 时才恢复（上游 llama.cpp 需要那样）。
+**The relationship between MTP and vision projection is in the next section "MTP and vision coexistence"** — since `0.7.0`, the two can be enabled simultaneously by default;
+the mutual exclusion rule only recovers when `mtpWithVision` is turned off (upstream llama.cpp needs that).
 
-### MTP 与视觉共存（`0.7.0`）
+### MTP and vision coexistence (`0.7.0`)
 
-设置项 `mtpWithVision`，**默认开启**。上游 llama.cpp 里 MTP 与图像输入不能同时下发（会加载失败），
-但 **kvmem 分支的 `llama-kvmem-server` 支持**：同时给 `--mmproj` 与 `--spec-type draft-mtp` 时
-`clip_model_loader: has vision encoder` 与 `creating MTP draft context` 会同时出现、服务正常起来、
-看图对话也能识别（2026-09-21 本机实测）。所以默认允许「开着 MTP 用图片」。
+Setting item `mtpWithVision`, **on by default**. In upstream llama.cpp, MTP and image input cannot be sent simultaneously (load failure),
+but **the kvmem branch's `llama-kvmem-server` supports it**: when given both `--mmproj` and `--spec-type draft-mtp`,
+`clip_model_loader: has vision encoder` and `creating MTP draft context` appear simultaneously, the service starts normally,
+and image conversations are also recognized (measured on this machine 2026-09-21). So by default "using images with MTP on" is allowed.
 
-关掉它即恢复旧的互斥：MTP 生效、`--mmproj` 被忽略 —— 界面上下拉框会置灰、状态卡说明原因，
-**你选的 `mmprojFile` 不会被清空**（免得来回切开关时丢配置）。换回官方 llama.cpp 的用户请关掉本项。
+Turning it off recovers the old mutual exclusion: MTP active, `--mmproj` ignored — the dropdown on the UI grays out, the status card explains the reason,
+**your chosen `mmprojFile` is not cleared** (so as not to lose configuration when switching the toggle back and forth). Users who switch back to official llama.cpp should turn off this item.
 
-### 本次启动参数面板（`0.7.0`）
+### Launch parameters panel for this run (`0.7.0`)
 
-设置页**最顶部**会显示这次**真正下发给 llama-server 的完整命令行**（逐项一行），外加一张参数摘要
-（含派生的「GPU KV 合计 = 工作集 + 解码预留」）和一个「复制命令行」按钮。
+At the **very top** of the settings page, the **full command line actually sent to llama-server this time** is displayed (one line per item), plus a parameter summary
+(including the derived "GPU KV total = working set + decode reserve") and a "Copy command line" button.
 
-两个刻意的取舍：
+Two deliberate trade-offs:
 
-- **数据源是下发的 args，不是设置页里的配置。** 两者之间隔着门控跳过、构建默认值与自动收敛
-  （`-ub <= -b`、`-np 1` 之类），只有 args 能回答「现在到底跑在什么参数上」。
-- **它还会列出「识别表没覆盖到的选项」。** 识别表会随构建变化而过时；漏掉的项如果不说出来，
-  用户就永远不知道它被发了 —— 看不见的参数比错的值更危险。
+- **The data source is the sent args, not the configuration on the settings page.** Between the two there are gating skips, build defaults, and auto-convergence
+  (like `-ub <= -b`, `-np 1`); only args can answer "what parameters is it actually running with right now".
+- **It also lists "options not covered by the recognition table."** The recognition table becomes outdated as builds change; if missed items are not spoken,
+  users will never know they were sent — invisible parameters are more dangerous than wrong values.
 
-| 事实 | 说明 |
+| Fact | Description |
 | --- | --- |
-| 开关名 | `--spec-type draft-mtp`（不是 `-mtp` / `--spec mtp`，那两个是早期写法的残留，已被标准化掉） |
-| 需要草稿模型吗 | 不需要。MTP 用的是模型自带的预测头，这是它比传统投机解码省事的地方 |
-| llama.cpp 版本 | 需要 2026-05 之后的构建（PR #22673 合并了 MTP 支持） |
-| 模型要求 | 必须是**带 MTP 头的 GGUF**（文件名常带 `MTP` 字样）。普通 GGUF 打开这个开关**零效果且不报错** |
-| 与图像输入 | **互斥**。开了 MTP 就不能下发 `--mmproj` |
-| 草稿深度 | `--spec-draft-n-max`（llama.cpp 默认 16，社区推荐 2~3，太大反而更慢）。插件**不下发**这个值，需要时用「附加参数」 |
+| Toggle name | `--spec-type draft-mtp` (not `-mtp` / `--spec mtp`; those are remnants of early writing, already standardized away) |
+| Does a draft model need to be required? | No. MTP uses the model's built-in prediction head; this is where it is less hassle than traditional speculative decoding |
+| llama.cpp version | Requires builds after 2026-05 (PR #22673 merged MTP support) |
+| Model requirement | Must be a **GGUF with an MTP head** (filename often contains `MTP` characters). Enabling this toggle on an ordinary GGUF has **zero effect and no error** |
+| With image input | **Mutually exclusive**. With MTP on, `--mmproj` cannot be sent |
+| Draft depth | `--spec-draft-n-max` (llama.cpp default 16, community recommends 2~3; too large is actually slower). The plugin **does not send** this value; use "extra parameters" when needed |
 
-> 最容易踩的坑是第 4 条：**普通 GGUF 打开开关不会有任何加速，而且不报错**。如果你开了 MTP 却感觉没变快，
-> 先确认模型文件名里有没有 `MTP` 字样，再看 llama.cpp 的构建日期。
+> The easiest pitfall to step in is item 4: **enabling the toggle on an ordinary GGUF has no acceleration at all and no error**. If you enabled MTP but feel it did not get faster,
+> first check if the model filename contains `MTP` characters, then look at llama.cpp's build date.
 
-### 采样参数与 KV 缓存策略（0.4.0 新增）
+### Sampling parameters and KV cache policy (new in 0.4.0)
 
-这一组**每次加载都会显式下发**，因此会**覆盖 llama.cpp 自身的默认值**。差异也逐项写在设置页的说明里，
-这里汇总成表：
+This group is **explicitly sent on every load**, so it **overrides llama.cpp's own defaults**. The differences are also written item by item in the settings page descriptions;
+here they are summarized into a table:
 
-| 参数 | 插件默认 | llama.cpp 默认 | 说明 |
+| Parameter | Plugin default | llama.cpp default | Description |
 | --- | --- | --- | --- |
-| `--temp` | 0.75 | 0.80 | 温度：越高越随机 |
-| `--top-k` | 20 | 40 | 只从概率最高的 K 个 token 里采样；0 = 不过滤 |
-| `--top-p` | 0.95 | 0.95 | 核采样阈值（一致） |
-| `--min-p` | 0.0 | 0.05 | 0 = 关掉最小概率过滤 |
-| `--presence-penalty` | 0.0 | 0.0 | 存在惩罚（一致） |
-| `--repeat-penalty` | 1.0 | 1.10 | 1.0 = 不做重复惩罚 |
-| `--repeat-last-n` | 64 | 64 | 检查最近多少个 token（一致）；构建不公开它时跳过（见「分支构建」一节） |
-| `--seed` | -1 | -1 | -1 = 每次启动都用随机种子（一致）。**负数不下发**：负号只是「随机」的写法，而不下发就是随机 —— 但有些分支把取值校验成 uint32，收到 `-1` 会直接报错退出 |
+| `--temp` | 0.75 | 0.80 | Temperature: higher is more random |
+| `--top-k` | 20 | 40 | Only sample from the K most probable tokens; 0 = no filter |
+| `--top-p` | 0.95 | 0.95 | Nucleus sampling threshold (identical) |
+| `--min-p` | 0.0 | 0.05 | 0 = turn off minimum probability filter |
+| `--presence-penalty` | 0.0 | 0.0 | Presence penalty (identical) |
+| `--repeat-penalty` | 1.0 | 1.10 | 1.0 = no repeat penalty |
+| `--repeat-last-n` | 64 | 64 | How many recent tokens to check (identical); skipped when the build does not expose it (see "branch builds" section) |
+| `--seed` | -1 | -1 | -1 = use a random seed on every startup (identical). **Negative numbers are not sent**: the minus sign is just the way of writing "random", and not sending is random — but some branches validate the value range as uint32, and receiving `-1` directly reports an error and exits |
 
-**所以升级到 0.4.0 之后生成风格会变**：更确定（temp 更低）、候选更窄（top-k 减半）、
-不再惩罚重复、关掉了 min-p 过滤。想退回原样，把上表右列的值填回设置页即可。
+**So after upgrading to 0.4.0, generation style changes**: more deterministic (lower temp), narrower candidates (top-k halved),
+no longer penalizing repeats, min-p filter turned off. To revert to the original, fill in the values from the right column of the table above back into the settings page.
 
-KV 两项用于长上下文：
+The two KV items are for long context:
 
-| 参数 | 插件默认 | 作用 |
+| Parameter | Plugin default | Role |
 | --- | --- | --- |
-| `--kv-unified` | 关闭 | 用一整块统一缓冲管理 KV 缓存，减少「按层分配」造成的显存碎片，长上下文更容易装下。代价是这块缓冲在加载时就按**完整上下文**预留 —— 即使很少跑满也占着显存 |
-| `--kv-stream-stage-mib` | 1024 | 把这么多 MiB 的 KV 缓存暂存到主机内存，以减轻显存压力。0 = 不下发。**这是「自适应 KV 流式」那个 llama.cpp 分支的私有参数**，上游构建不认识它。开启时插件会**自动追加 `-np 1`**（见下方说明） |
+| `--kv-unified` | Off | Manage the KV cache with one unified buffer, reducing VRAM fragmentation caused by "per-layer allocation", making long context easier to fit. The cost is that this buffer is reserved at load time for the **full context** — it occupies VRAM even if it rarely runs full |
+| `--kv-stream-stage-mib` | 1024 | Stage this many MiB of KV cache into host memory to relieve VRAM pressure. 0 = do not send. **This is a private parameter of the "adaptive KV streaming" llama.cpp branch**; upstream builds do not recognize it. When enabled, the plugin **automatically appends `-np 1`** (see explanation below) |
 
-> ⚠️ **`--kv-stream-stage-mib` 有个前置条件：块级 KV 流式要求「恰好一个序列」。**
-> 而 llama.cpp 的 `-np` 默认是 `-1`（自动），会落到多序列 —— 于是「一开暂存就加载不了」：
+> ⚠️ **`--kv-stream-stage-mib` has a precondition: block-level KV streaming requires "exactly one sequence."**
+> And llama.cpp's `-np` default is `-1` (auto), which lands on multi-sequence — so "turning on staging makes it unable to load":
 >
 > ```
 > E llama_init_from_model: failed to initialize the context:
 >     block KV streaming requires exactly one sequence (-np 1)
 > ```
 >
-> 所以只要暂存值 > 0 且构建支持它，插件就**自动追加 `-np 1`**（并在日志里说明），
-> 不会把这个坑留给你去猜。副作用是并发槽位变成 1 —— 本地单人使用没有影响。
-> 如果你在「附加参数」里自己写过 `-np` / `--parallel`，插件**不会覆盖**你的显式设置，
-> 但会在日志里警告：那里不是 1 就会加载失败。
+> So as long as the staging value > 0 and the build supports it, the plugin **automatically appends `-np 1`** (and explains in the log),
+> not leaving this pitfall for you to guess. The side effect is that concurrent slots become 1 — no impact on local single-user use.
+> If you wrote `-np` / `--parallel` yourself in "extra parameters", the plugin **will not override** your explicit setting,
+> but will warn in the log: if it is not 1 there, loading will fail.
 
-图像两项（`--image-min-tokens` / `--image-max-tokens`）只对**动态分辨率**的视觉模型生效，且要先挂上视觉投影文件；
-`max` 小于 `min` 时插件会就地把它抬到 `min`（否则 llama.cpp 拒绝启动）。
-`--reasoning-budget` 限制思考链的最大长度，0 = 关掉思考、-1 = 不限。
+The two image items (`--image-min-tokens` / `--image-max-tokens`) only take effect on vision models with **dynamic resolution**, and a vision projection file must be attached first;
+when `max` is smaller than `min`, the plugin lifts it to `min` in place (otherwise llama.cpp refuses to start).
+`--reasoning-budget` limits the maximum length of the thinking chain; 0 = turn off thinking, -1 = unlimited.
 
-### dsh 的「推理等级」滑杆怎么连到本地模型
+### How dsh's "reasoning level" slider connects to local models
 
-对话框里的 **Off / Low / Medium / High** 要真正生效，得跨过三道关。`0.4.1` 及以前只走通了一半，
-所以出现「拨了没反应」；`0.4.2` 把三道都走通了：
+For **Off / Low / Medium / High** in the dialog box to truly take effect, it must pass three gates. `0.4.1` and earlier only got half through,
+so "toggling has no response" occurred; `0.4.2` got all three through:
 
-| 环节 | 谁负责 | 说明 |
+| Stage | Who is responsible | Description |
 | --- | --- | --- |
-| ① dsh 知道这是推理模型 | **你的路由配置** | 模型条目里要有 `reasoningEfforts`。没有它，pi-ai 认为这不是推理模型，**一个思考参数都不发** |
-| ② 档位送到 llama-server | 代理层 | 档位必须落在 `chat_template_kwargs.reasoning_effort`。**顶层的 `reasoning_effort` 会被静默丢掉**（无报错、无日志），插件会把它挪进去 |
-| ③ 发给模板的值必须是它认的 | 代理层 | 插件**读模型的对话模板**，把档位重映射成模板真正支持的那几个 |
+| ① dsh knows this is a reasoning model | **Your route configuration** | The model entry must have `reasoningEfforts`. Without it, pi-ai considers this not a reasoning model and **sends no thinking parameters at all** |
+| ② Tier sent to llama-server | Proxy layer | The tier must land in `chat_template_kwargs.reasoning_effort`. **Top-level `reasoning_effort` is silently discarded** (no error, no log); the plugin moves it in |
+| ③ Value sent to template must be one it recognizes | Proxy layer | The plugin **reads the model's conversation template** and remaps the tier to the few the template actually supports |
 
-第 ③ 条是关键，也是 `0.4.1` 踩的坑：**模型模板对不认识的档位是直接 throw，不是忽略。**
-实测这个模型的模板里写着：
+Item ③ is key, and also the pitfall `0.4.1` stepped in: **the model template directly throws on unrecognized tiers, not ignores them.**
+In practice, this model's template says:
 
 ```jinja
 {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}
     {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ ...) }}
 ```
 
-它只认 `xhigh` / `medium` / `low`（默认 `xhigh`）。于是面板上选个 High、或者 dsh 把 `off` 写成布尔 `false`，
-都会让**整次对话 500**。`0.4.2` 起插件的做法是：
+It only recognizes `xhigh` / `medium` / `low` (default `xhigh`). So choosing High on the panel, or dsh writing `off` as boolean `false`,
+both cause **the whole conversation to 500**. The plugin's approach since `0.4.2`:
 
-- 加载后读一次模型模板，解析出它支持的档位表（日志里会打出来，设置页状态卡也显示）；
-- 面板档位 → 映射到表里最接近的一个（距离相同时取更高，所以 `high → xhigh`）；
-- 映射不出来、或压根没解析到档位表 → **干脆不发这个字段**，让模板用自己的默认值。
+- After loading, read the model template once and parse out the table of tiers it supports (printed in the log, also shown on the settings page status card);
+- Panel tier → map to the closest one in the table (when distances are equal, take the higher one, so `high → xhigh`);
+- Cannot be mapped, or no tier table parsed at all → **just do not send this field**, letting the template use its own default.
 
-`off` 的传递也一并修好了：dsh 会把「档位 = off」经 `settings.yaml` 往返后变成**布尔 `false`**
-（YAML 把 `off` 读成布尔）。插件现在认得这种形态，会把它翻译成 `enable_thinking: false`。
+The passing of `off` is also fixed together: dsh turns "tier = off" into **boolean `false`** after a round trip through `settings.yaml`
+(YAML reads `off` as boolean). The plugin now recognizes this form and translates it to `enable_thinking: false`.
 
-开关保持开启时，最终发给 llama-server 的内容：
+When the toggle remains on, what is finally sent to llama-server:
 
-| 对话框档位 | 实际下发 |
+| Dialog tier | Actually sent |
 | --- | --- |
 | Off | `{"enable_thinking": false, "preserve_thinking": true}` |
 | Low | `{"enable_thinking": true, "reasoning_effort": "low", "preserve_thinking": true}` |
 | Medium | `{"enable_thinking": true, "reasoning_effort": "medium", "preserve_thinking": true}` |
-| High | `{"enable_thinking": true, "reasoning_effort": "xhigh", "preserve_thinking": true}` ← 按模板改写 |
+| High | `{"enable_thinking": true, "reasoning_effort": "xhigh", "preserve_thinking": true}` ← rewritten by template |
 
-> 想知道你这台机器实际解析出的档位表：看日志里的「模型模板支持的推理档位」那一行，
-> 或看 **设置 → 本地模型** 状态卡里的「推理档位」。它决定了面板档位最后会变成什么。
+> To know the tier table actually parsed on your machine: look at the line "Reasoning tiers supported by the model template" in the log,
+> or look at "Reasoning tier" in the status card of **Settings → Local model**. It determines what the panel tier will finally become.
 >
-> 另一个更可靠的杠杆是**「推理 token 预算」**（`--reasoning-budget`，引擎级硬上限）：
-> 档位是「请模型自己想多深」，预算是「想超过 N 个 token 就强制打断」。两者互补，不冲突。
+> Another more reliable lever is **"reasoning token budget"** (`--reasoning-budget`, engine-level hard limit):
+> tier is "ask the model to think for itself how deep", budget is "force interruption if thinking exceeds N tokens". The two are complementary, not conflicting.
 
-### 三个和「思考」有关的设置，怎么配合
+### Three settings related to "thinking", how they work together
 
-设置页里有三项都会影响模型的思考行为。它们**不冲突，但作用层不同** —— 混着调很容易得出错误结论：
+There are three items on the settings page that all affect the model's thinking behavior. They **do not conflict, but act at different layers** — mixing them up easily leads to wrong conclusions:
 
-| 设置 | 作用层 | 生效时机 | 干什么 |
+| Setting | Acting layer | Effective timing | What it does |
 | --- | --- | --- | --- |
-| **启用思考** | 模板级 | **每次请求** | 告诉对话模板：要不要进入思考模式。**只在请求什么都没说时才生效** —— 请求带了 `enable_thinking` 或推理档位就听请求的 |
-| **保留历史 think** | 模板级 | 每次请求（`preserve_thinking`，关闭时还会剥掉历史里的 think 文本） | 多轮对话中，历史 assistant 的思考内容要不要留在上下文里 |
-| **推理 token 预算** | 引擎级 | **加载时**（`--reasoning-budget`） | 数着思考 token，超了强制结束思考 |
+| **Enable thinking** | Template level | **Every request** | Tells the conversation template: whether to enter thinking mode. **Only takes effect when the request says nothing** — if the request carries `enable_thinking` or a reasoning tier, defer to the request |
+| **Preserve historical think** | Template level | Every request (`preserve_thinking`; when off, also strips think text from history) | In multi-turn conversations, whether historical assistant thinking content stays in context |
+| **Reasoning token budget** | Engine level | **At load time** (`--reasoning-budget`) | Counts thinking tokens; force-ends thinking when exceeded |
 
-为什么「启用思考」走请求体、而预算走启动参数：前者是每轮都可能变的偏好，改在请求体里切一次立即生效，
-且旧构建最坏只是忽略它；后者是采样阶段的约束，llama.cpp 只提供了启动参数这个入口。
+Why "enable thinking" goes through the request body while budget goes through launch parameters: the former is a preference that may change every turn; changing it in the request body takes effect immediately,
+and old builds at worst only ignore it; the latter is a constraint of the sampling phase, and llama.cpp only provides the launch parameter as an entry.
 
-两个建议避开的组合：
+Two combinations to avoid:
 
-| 组合 | 会发生什么 |
+| Combination | What happens |
 | --- | --- |
-| 启用思考 **关** + 预算 **> 0** | 预算永远不会被触发 —— 模板都不进思考了，哪来的思考 token。看上去「预算没起作用」，其实是被架空 |
-| 启用思考 **开** + 预算 **0** | 模型先进思考、再被立刻掐断。通常给出一个空的思考块，个别模型上还会直接跑偏 |
+| Enable thinking **off** + budget **> 0** | The budget will never be triggered — the template doesn't even enter thinking, so where would thinking tokens come from. Looks like "budget not working", but actually it is bypassed |
+| Enable thinking **on** + budget **0** | The model first enters thinking, then is immediately cut off. Usually produces an empty thinking block; on some models it directly goes off the rails |
 
-**要彻底不思考，用「启用思考 = 关」**（快、稳、旧构建也认）；**要给思考链设上限，才用预算。**
+**To completely not think, use "Enable thinking = off"** (fast, stable, recognized by old builds); **only use the budget to set an upper limit on the thinking chain.**
 
-> 预算还有个副作用值得知道：耗尽时模型是被**硬掐断**的，而 llama.cpp 的过渡提示语
-> （`--reasoning-budget-message`）插件不下发。官方维护者用 HumanEval 实测：预算设得太紧又没有提示语时，
-> 得分从 94% 掉到 78%。需要提示语就用「附加参数」自己加 `--reasoning-budget-message "…"`。
-> 另外 `--reasoning-budget` 需要较新的构建（插件会先探测，构建不认就跳过并在日志里说明）。
+> The budget has a side effect worth knowing: when exhausted, the model is **hard-cut**, and llama.cpp's transition prompt
+> (`--reasoning-budget-message`) is not sent by the plugin. Official maintainers measured with HumanEval: when the budget is set too tight and there is no prompt,
+> scores drop from 94% to 78%. If a prompt is needed, add `--reasoning-budget-message "…"` yourself via "extra parameters".
+> Also `--reasoning-budget` requires a newer build (the plugin probes first; if the build does not recognize it, skip and explain in the log).
 
-### 换了一个 llama 分支也能起来：只下发构建承认的选项
+### Switching to a different llama branch also starts: only send options the build admits
 
-`--kv-unified`、`--kv-stream-stage-mib`、`--image-*-tokens`、`--reasoning-budget` 都比较新，
-其中流式暂存更是特定分支独有。而**不认识的选项会让服务直接启动失败** ——
-那等于「换了个分支 / 加了个开关，插件反而起不来了」。
+`--kv-unified`, `--kv-stream-stage-mib`, `--image-*-tokens`, `--reasoning-budget` are all relatively new,
+and streaming staging is exclusive to a specific branch. And **unrecognized options cause the service to fail to start directly** —
+that equals "switched to a branch / added a toggle, and the plugin instead cannot start".
 
-所以插件在起进程前先跑一次 `--help`（本节开头介绍过这套探测），并且**只下发构建承认的选项**。
-两档严格程度，分别解决两个具体问题：
+So the plugin first runs `--help` before starting the process (this probe was introduced at the beginning of this section), and **only sends options the build admits**.
+Two levels of strictness, each solving a specific problem:
 
-| 哪一类选项 | 探测失败时 | 构建明确不公开时 | 例子 |
+| Which kind of option | When detection fails | When the build explicitly does not expose it | Example |
 | --- | --- | --- | --- |
-| 只有新构建 / 特定分支才有的 | **不下发**（宁可退回构建默认值，也不赌它认） | 不下发 | `--kv-unified`、`--kv-stream-stage-mib`、`--image-*-tokens`、`--reasoning-budget` |
-| 其余（别名、线程、批大小、采样参数…） | **照旧下发**（与历史行为完全一致，一次 `--help` 失败不该丢掉你的采样设置） | **不下发** | `--alias`、`-t`、`--threads-batch`、`-ub`、`--repeat-last-n`、`--no-mmap`、`--mlock`、`--api-key`、`--temp` 那一组 |
+| Only present in new builds / specific branches | **Do not send** (better to fall back to build defaults than to bet on recognition) | Do not send | `--kv-unified`, `--kv-stream-stage-mib`, `--image-*-tokens`, `--reasoning-budget` |
+| The rest (aliases, threads, batch size, sampling parameters…) | **Send as before** (completely identical to historical behavior; one `--help` failure should not lose your sampling settings) | **Do not send** | `--alias`, `-t`, `--threads-batch`, `-ub`, `--repeat-last-n`, `--no-mmap`, `--mlock`, `--api-key`, that group of `--temp` |
 
-跳过的一律写进日志（`这个 llama-server 不认识以下选项，已跳过（不影响加载）：…`），
-绝不静默 —— 你能看到的是「哪几个选项没发出去」，而不是「命令行里少了一项」。
+Everything skipped is written to the log (`This llama-server does not recognize the following options; skipped (does not affect loading): …`),
+never silent — what you can see is "which options were not sent", not "one item missing from the command line".
 
-实测反例（`kvmem-v0.16.0-rc2` 那个独立的 `llama-kvmem-server.exe`，它的选项表是 llama.cpp 的真子集）：
+Measured counter-example (that standalone `llama-kvmem-server.exe` of `kvmem-v0.16.0-rc2`, whose option table is a true subset of llama.cpp's):
 
 ```
 unknown flag: --alias
 usage: ...\llama-kvmem-server.exe -m model.gguf [options]
 ```
 
-它一次只报一个未知选项然后 exit 1 —— 所以「只修 `--alias` 一个」是不够的：
-`-t` / `-ub` / `--repeat-last-n` / `--no-mmap` / `--api-key` 会是下一个。
-`--seed -1` 则是另一种形态：选项认识，但值超出它校验的 uint32 范围（见上一节的表格）。
+It reports only one unknown option at a time and then exits 1 — so "just fixing `--alias`" is not enough:
+`-t` / `-ub` / `--repeat-last-n` / `--no-mmap` / `--api-key` will be next.
+`--seed -1` is another form: the option is recognized, but the value exceeds its validated uint32 range (see the table in the previous section).
 
-> 想知道你的这份 llama.cpp 认哪些选项、插件实际会下发什么？跑 `npm run verify:llama`：
-> 它用你的实际配置拼出完整命令行（模型换成不存在的哨兵路径，不占显存），真的起一次服务并报告结论；
-> 它会同时报出「哪些选项被跳过了」，以及实测里有没有出现 `unknown flag` 这类参数错误。
+> To know which options your copy of llama.cpp recognizes and what the plugin will actually send? Run `npm run verify:llama`:
+> it assembles the full command line with your real configuration (model swapped for a non-existent sentinel path, no VRAM occupied), really starts the service once and reports the conclusion;
+> it also reports "which options were skipped" and whether parameter errors like `unknown flag` appeared in the measurement.
 
-### 「接入 dsh」那些设置去哪了
+### Where did the "dsh integration" settings go
 
-`0.4.0` 按用户要求删掉了整组「接入 dsh」设置。它们**改成了常量**（`src/configResolve.ts`），
-取值就是原来的默认值：
+`0.4.0` deleted the entire "dsh integration" settings group at the user's request. They **became constants** (`src/configResolve.ts`),
+values being the original defaults:
 
-| 原设置 | 现在的常量 | 影响 |
+| Original setting | Current constant | Impact |
 | --- | --- | --- |
-| `routeName` | `local-llama` | 路由名固定，dsh 侧 `settings.yaml` 不用改 |
-| `modelAlias` / `routeModelId` | `local` | 模型选择器里的 id 固定为 `local`（由插件自己的 `/v1/models` 回答）；`--alias` 只是顺便让上游也叫这个名字，构建不认它时跳过，dsh 侧 id 不受影响 |
-| `contextWindow` | **跟随 `ctxSize`** | 见下 |
-| `registerRoute` | 恒为真 | 始终尝试注册路由；宿主没接口时照旧降级为打印可粘贴的 YAML |
-| `exposeTool` | 恒为真 | `local_model` 工具照旧注册 |
-| `allowModelControl` | 恒为假 | **能力取舍**：`local_model` 的 `start` / `stop` 从此恒被拒绝，无法再打开 |
+| `routeName` | `local-llama` | Route name fixed; no need to change dsh-side `settings.yaml` |
+| `modelAlias` / `routeModelId` | `local` | The id in the model selector is fixed as `local` (answered by the plugin's own `/v1/models`); `--alias` just incidentally lets upstream also call it this name; skipped when the build does not recognize it, dsh-side id unaffected |
+| `contextWindow` | **Follows `ctxSize`** | See below |
+| `registerRoute` | Always true | Always tries to register the route; when the host has no interface, degrades as before to printing pasteable YAML |
+| `exposeTool` | Always true | The `local_model` tool is registered as before |
+| `allowModelControl` | Always false | **Capability trade-off**: `local_model`'s `start` / `stop` are always rejected from now on, cannot be turned on again |
 
-`contextWindow` 是唯一一个**取值发生变化**的：它过去独立可配（默认 32768），而 `ctxSize` 默认 8192 ——
-两者不一致正是插件一直警告的「声明比实际大 → 长会话中途崩」。现在声明的窗口直接取 `ctxSize`，
-两者同源、不可能再错位，启动后的对账警告也因此更准。
+`contextWindow` is the only one whose **value changed**: it was previously independently configurable (default 32768), while `ctxSize` defaults to 8192 —
+the inconsistency between the two is exactly the "declared larger than actual → crashes mid-long-conversation" that the plugin has always warned about. Now the declared window directly takes `ctxSize`,
+both from the same source, can never be misaligned again, and the post-startup reconciliation warning is also more accurate.
 
-> 副作用提醒：`local_model` 工具的 `start` / `stop` 动作现在恒被拒绝（这本是原默认行为，
-> 但过去能用 `allowModelControl` 打开）。要恢复可控，得改 `src/configResolve.ts` 里的常量。
+> Side effect reminder: the `start` / `stop` actions of the `local_model` tool are now always rejected (this was originally the default behavior,
+> but previously `allowModelControl` could turn it on). To restore controllability, you must change the constants in `src/configResolve.ts`.
 
-## 5. 接入模型路由
+## 5. Model route integration
 
-插件启动时会尝试把本地端点注册进 dsh 的 llm 缝。**注册成功**（日志里能看到
-`已通过 llm.<method>() 注册本地模型路由`）就可以直接在模型选择器里选 `local`。
+On startup, the plugin tries to register the local endpoint into dsh's llm seam. **Registration success** (visible in the log
+as `Registered local model route via llm.<method>()`) lets you directly select `local` in the model selector.
 
-**如果宿主没暴露注册接口**，插件不会报错、也不会影响模型加载，只在日志里打印一段
-可以直接粘贴的配置；把 `examples/settings-route.yaml` 的内容并进 `$DSH_HOME/settings.yaml`
-即可（已存在 `providers` 时是**并入**，不要整体覆盖）：
+**If the host does not expose a registration interface**, the plugin does not report an error and does not affect model loading; it only prints a piece of configuration
+that can be pasted directly in the log; merge the content of `examples/settings-route.yaml` into `$DSH_HOME/settings.yaml`
+(if `providers` already exists, **merge**, do not overwrite the whole thing):
 
 ```yaml
 llm-pi-ai:
   providers:
     local-llama:
-      displayName: 本地模型（llama.cpp）
+      displayName: Local model (llama.cpp)
       api: openai-completions
       baseURL: http://127.0.0.1:18080/v1
-      streamIdleTimeoutMs: 600000      # 本地/CPU 推理慢，这个必须放宽
+      streamIdleTimeoutMs: 600000      # Local/CPU inference is slow; this must be relaxed
       models:
         - id: local
-          contextWindow: 8192          # 跟随「设置 → 上下文长度」，改 ctxSize 时这里也要跟着改
+          contextWindow: 8192          # Follows "Settings → Context length"; when changing ctxSize, change here too
           maxTokens: 8192
 ```
 
-> 上面是最小可连通版本。**完整版（含「推理档位」的 `compat` 与 `reasoningEfforts`）见
-> `examples/settings-route.yaml`** —— 少了那一段，dsh 的「推理等级」滑杆会失灵；
-> 插件自动注册时会带上它，`/local-model route` 打出来的也是完整版。
+> Above is the minimum connectable version. **The full version (including `compat` and `reasoningEfforts` for "reasoning tier") is in
+> `examples/settings-route.yaml`** — without that part, dsh's "reasoning level" slider malfunctions;
+> when the plugin auto-registers it carries that, and what `/local-model route` prints is also the full version.
 >
-> `0.4.0` 起 `local-llama` 与 `local` 这两个名字、以及 `contextWindow = ctxSize` 的规则都是**固定的**
-> （原 `routeName` / `modelAlias` / `routeModelId` / `contextWindow` 设置已删除）。
-> 手写配置时照抄上面的 id 即可；`contextWindow` 是唯一需要你自己跟上 `ctxSize` 的值。
-> 插件自己注册的那条路由会用 `ctxSize` 自动填这个字段，所以只有手写配置时才需要操心它。
+> Since `0.4.0`, the two names `local-llama` and `local`, as well as the rule `contextWindow = ctxSize`, are all **fixed**
+> (the original `routeName` / `modelAlias` / `routeModelId` / `contextWindow` settings have been deleted).
+> When hand-writing configuration, just copy the ids above; `contextWindow` is the only value you need to keep up with `ctxSize`.
+> The route the plugin itself registers auto-fills this field with `ctxSize`, so only hand-written configurations need to worry about it.
 
-会话里也可以用 `/local-model route` 随时打印这段配置。
+In a conversation you can also use `/local-model route` to print this configuration at any time.
 
-## 6. 运行机制
+## 6. Operating mechanism
 
-**为什么要有一个常驻代理？** 最直接的做法是让 dsh 连 llama-server 的端口。但模型卸载后那个端口
-就没人监听了，**下一条对话必然连接失败** —— 而「按需加载」又要求端点平时不在。这是个死结。
+**Why have a resident proxy?** The most direct approach is to let dsh connect to llama-server's port. But after the model is unloaded, that port
+is no longer listened on, and **the next conversation will necessarily fail to connect** — and "on-demand loading" requires the endpoint to normally not be there. This is a dead end.
 
-解法是让插件常驻一个极轻量的 HTTP 入口（不加载模型、不占显存），由它消化掉「模型还没加载」这件事：
-
-```
-第一条对话 ──▶ 插件代理 :18080 ──ensureReady()──▶ 拉起 llama-server（内部随机空闲端口）
-                    │                                   │
-                    │◀────── 等 /health 就绪 ────────────┘
-                    └──原样转发（含 SSE 流式）──▶ llama-server
-                                        │
-              连续 5 分钟无交互 ◀────────┘ 卸载 → 端口释放 → 回到待机
-```
-
-对 dsh 来说端点始终在线；对用户来说显存只在真正用的时候才被占。
-
-**代理会改一种请求体：对话补全**
-
-「原样转发」有一个例外 —— `POST /v1/chat/completions` 的请求体会按两个思考开关改写：
+The solution is to have the plugin resident an extremely lightweight HTTP entry (no model loaded, no VRAM occupied), which digests "the model is not yet loaded":
 
 ```
-请求体 ──▶ 合并 chat_template_kwargs（enable_thinking / preserve_thinking）
-        └─▶ 关闭「保留历史 think」时：剥掉历史 assistant 消息的 reasoning_content 与 think 文本
+First conversation ──▶ Plugin proxy :18080 ──ensureReady()──▶ Launch llama-server (internal random free port)
+                     │                                   │
+                     │◀────── Wait for /health ready ────────────┘
+                     └──Forward as-is (including SSE streaming)──▶ llama-server
+                                         │
+               5 consecutive minutes without interaction ◀────────┘ Unload → Port released → Back to idle
 ```
 
-为什么改在请求体而不是 llama-server 启动参数（`--chat-template-kwargs`）：
+For dsh, the endpoint is always online; for the user, VRAM is only occupied when truly in use.
 
-1. 启动参数在旧构建上根本不存在，一旦下发就是「模型起不来」；请求体里多一个字段，
-   旧构建的 JSON 解析器直接忽略，**最坏也只是开关无效**，模型加载这条主线绝不受影响；
-2. 这两个开关是「每次请求」的语义，改完即生效，不必为切一次开关重启模型；
-3. 「不保留历史 think」要动的是 `messages` 本身，启动参数表达不了。
+**The proxy rewrites one kind of request body: chat completions**
 
-其余路径（`/v1/models`、`/health`、`/v1/embeddings`…）连请求体都不读，仍是零改动的流式直通；
-认不出的请求体（非 JSON、非对象）一律原样放行 —— 一个可以降级的设置问题，不该变成一次请求失败。
-
-**状态机**
+"Forward as-is" has one exception — the request body of `POST /v1/chat/completions` is rewritten according to two thinking toggles:
 
 ```
-disabled ──启用──▶ idle ──首条对话──▶ starting ──就绪──▶ ready
-                    ▲                                    │
-                    └──── 空闲 5 分钟 / 切换模型 / 手动 ────┘
-                                                         │
-                                          崩溃且未超上限 ─┘──▶ starting（退避重试）
+Request body ──▶ Merge chat_template_kwargs (enable_thinking / preserve_thinking)
+        └─▶ When "Preserve historical think" is off: strip reasoning_content and think text from historical assistant messages
 ```
 
-## 7. 稳定性设计
+Why change in the request body rather than llama-server launch parameters (`--chat-template-kwargs`):
 
-这些都是「启动与卸载逻辑稳定可靠」的具体承诺，且多数有测试覆盖：
+1. Launch parameters do not exist at all on old builds; once sent it becomes "model cannot start"; one extra field in the request body,
+   old build's JSON parser directly ignores it, **at worst only the toggle is ineffective**, and the main line of model loading is never affected;
+2. These two toggles have "every request" semantics; changes take effect immediately, no need to restart the model just to flip a toggle;
+3. "Not preserving historical think" needs to touch `messages` itself, which launch parameters cannot express.
 
-- **加载单飞**：并发请求共享同一次加载，不会重复 spawn 出多个进程抢显存。
-- **残留进程回收**：dsh 被强杀会留下握着显存的孤儿 llama-server。插件下次启动时按 `state/llama-server.pid`
-  先回收它，再启动新的 —— 顺序反了就是 OOM。
-- **崩溃自愈**：非预期退出时按 1s/2s 退避重启，超过 `maxRestarts` 进入 `failed` 并停止重试（不无限重启打满 CPU）。
-- **端口自适应**：`llamaPort=0` 每次自动挑空闲端口；对外端口被占用会向后找 20 个，仍不行则交给内核分配并提示。
-- **进程树回收**：超时后强制结束整棵进程树（`taskkill /T /F` / `SIGKILL`），避免后端 worker 变成孤儿。
-- **不打断生成**：`requestTimeout`/`timeout` 置 0；客户端中断（点停止）会同步掐掉上游推理，不继续空烧显存。
-- **卸载保护**：有活跃请求时绝不卸载；加载未完成时的卸载请求会先等加载结束。
-- **参数自纠**：`-ub > -b` 这类会让 llama.cpp 直接启动失败的组合，在拼参数阶段就收敛掉。
-- **密钥不落日志**：命令行日志里 `--api-key` 一律显示为 `***`；设置页标记为敏感字段。
+Other paths (`/v1/models`, `/health`, `/v1/embeddings`…) do not even read the request body; they remain zero-change streaming passthrough;
+unrecognized request bodies (non-JSON, non-object) are all passed through as-is — a degradable configuration problem should not become a request failure.
 
-## 8. 故障排查
+**State machine**
 
-| 现象 | 原因与处理 |
+```
+disabled ──enable──▶ idle ──first conversation──▶ starting ──ready──▶ ready
+                     ▲                                    │
+                     └──── 5 minutes idle / model switch / manual ────┘
+                                                          │
+                                           Crash and not over limit ─┘──▶ starting (backoff retry)
+```
+
+## 7. Stability design
+
+These are concrete commitments to "startup and unload logic being stable and reliable", most with test coverage:
+
+- **Load single-flight**: concurrent requests share the same load; no duplicate spawning of multiple processes competing for VRAM.
+- **Residual process reclamation**: force-killing dsh leaves orphan llama-servers holding VRAM. On next startup, the plugin first reclaims it according to `state/llama-server.pid`, then starts a new one — reversing the order means OOM.
+- **Crash self-healing**: on unexpected exit, restart with 1s/2s backoff; exceeding `maxRestarts` enters `failed` and stops retrying (no infinite restarts maxing out CPU).
+- **Port adaptation**: `llamaPort=0` auto-picks a free port each time; if the external port is occupied, look forward for 20; if still no good, let the kernel assign and prompt.
+- **Process tree reclamation**: after timeout, force-kill the whole process tree (`taskkill /T /F` / `SIGKILL`), avoiding backend workers becoming orphans.
+- **Do not interrupt generation**: set `requestTimeout`/`timeout` to 0; client interruption (clicking stop) synchronously cuts off upstream inference, no longer burning VRAM in vain.
+- **Unload protection**: never unload when there are active requests; unload requests before loading completes first wait for loading to end.
+- **Parameter self-correction**: combinations like `-ub > -b` that would cause llama.cpp to fail to start directly are converged at the parameter assembly stage.
+- **Keys do not land in logs**: `--api-key` in command line logs is always displayed as `***`; marked as a sensitive field on the settings page.
+
+## 8. Troubleshooting
+
+| Symptom | Cause and handling |
 | --- | --- |
-| 插件管理里显示「已安装，未生效」 | 两种成因：① `package.json` 没声明 `dsh.bundle`，或声明形状不对（正确形状见第 2 节）；② 该包没被登记进 profile 的 `dsh.profile.bundles`。跑 `npm run verify` 直接定位，再 `dsh plugin --profile <名字> add <本插件路径>` 一次补全 |
-| 插件已生效，但**设置里没有「本地模型」** | ① 改完 manifest 后没重启 dsh（bundle 组合在启动时固定）；② `dsh.client` 缺失或 `exports["./client"]` 没指向产物 —— 跑 `npm run verify` 与 `npm run test:client` 自查 |
-| 设置面板打开是空白 / 一直「正在读取配置…」 | 浏览器控制台看 `/api/local-model/state` 的返回。若是 403，说明你是通过局域网地址访问的 —— 面板刻意只服务本机（见第 4 节） |
-| 面板里改了设置不生效 | 保存后模型会卸载一次，下次对话按新参数加载；确认点的是「保存」而不是只改了输入框（底部会显示未保存项数） |
-| 改完代码 / 重新 build 后行为没变 | bundle 组合在 dsh **启动时**固定：装、卸、更新都必须重启 profile。客户端 bundle 也一样，改完要 `npm run build:client` 再重启 |
-| 加载失败，日志里出现 `error while handling argument "--xxx": unknown value for --xxx: '--yyy'` | **参数形状不匹配**：解析器把下一个参数当成前一个的值吃掉了。插件已内置探测与自动重试（见第 4 节），若你仍在旧版本上遇到，升级到 0.2.1+ 即可；诊断用 `npm run verify:llama` |
-| 换了 llama 分支后加载失败，日志里出现 `unknown flag: --alias`（或 `-ub` / `--repeat-last-n` / `-t` / `--no-mmap` / `--api-key`） | 这个分支**不是** llama.cpp 的 `llama-server`（例如 `llama-kvmem-server.exe` 这类独立 OpenAI 兼容 server），它的选项表只是 llama.cpp 的子集，且对未知选项是直接退出 1。插件会在启动前按 `--help` 探测并跳过它不认识的选项（0.5.3+），日志里能看到「已跳过：--alias、-ub、…」；升级到该版本即可。若你在旧版本上，临时办法是在「设置 → 本地模型 → llama-server 路径」换回官方 llama.cpp 构建 |
-| 加载失败，日志里出现 `invalid --seed: seed out of range [0, 4294967295]` | 这个分支把 `--seed` 校验成 uint32，而插件默认值是 `-1`（= 随机）。0.5.3+ 起**负数一律不下发该参数**（与「随机」等价：llama.cpp 的默认值本来就是 `-1`），因此不会再出现；旧版本上把「随机数种子」填成 0 或任意正数即可绕过 |
-| 对话**每一条**都失败，返回 `400 {"error":"prompt + max_tokens exceeds n_ctx"}` | **这是 dsh 侧路由声明与启动参数对不上**，不是模型坏了。kvmem 那个独立 server 会把 `prompt + max_tokens > n_ctx` 判成硬错误（上游 llama.cpp 只会 warning 后自行收敛），而报错里**既没有 prompt 长度也没有 n_ctx**。最常见的成因是 `settings.yaml` 里**手写**的路由把 `contextWindow` / `maxTokens` 填得比实际 `-c` 大（实测：声明 `maxTokens: 128000`、实际 `-c 32768`，于是 `128000 > 32768` 恒成立，每条消息必失败）。三步解决：① 看**设置 → 本地模型 → 上下文长度**（或插件日志里「已拉起：… `-c` N」那一行）拿到真实 `n_ctx`；② 把该模型的 `contextWindow` 改成这个值、`maxTokens` 改成它的 1/4 左右（例如 32768 / 8192）；③ **0.6.0+ 已经内置兜底**：`guardContextOverflow`（默认开）会预防性压掉必然失败的超大上限，并在服务端拒绝后逐级减半重试，日志里能看到「已把输出上限从 X 压到 Y 后重试」 |
-| 模型「话说一半就停了」/ 每次回复都特别短（明明没到上下文上限） | 看 **设置 → 本地模型 → KVMem 分块缓存 → 解码预留（`--kvmem-gen-reserve`）**。它是 kvmem 里**单次生成的上限**（含思考），而这个构建的默认值只有 **256** —— 不设置它，每次回复最多只能写 256 个 token，且**不会有任何报错**。把它设成不小于「单次最大输出 tokens」（例如 8192～16384）。加载日志里有一条专门的提醒，看到「解码预留…当前为 256」就是这个问题 |
-| 想调 KVMem 的分块检索（budget / 块大小 / 检索算法 / NVMe 溢场…） | 0.6.0+ 在设置页新增了「**KVMem 分块缓存（kvmem 分支专有）**」整组，共 18 项，对应 `--kvmem-*` 家族；另有「多 Token 预测（MTP）细节」组（`--spec-kv-dtype` / `--spec-draft-n-max` / `--spec-draft-p-min`）。**整组默认值都是「不下发」**（数字项填 `-1`、字符串留空），不动它们就等于用构建自己的默认行为。这些是 kvmem 分支专有参数，官方 llama.cpp 构建上会被整体跳过并在日志里说明 |
-| 想知道「我的 llama.cpp 会不会接受插件下发的参数」 | 跑 `npm run verify:llama`。它会读你的实际配置、拼出参数、真的起一次 llama-server（把模型换成不存在的哨兵路径，因此不会占显存），并给出通过/失败与完整命令行 |
-| 请求返回 503「还没有选择本地模型」 | 去 **设置 → 本地模型** 选模型；模型要放在 `modelsDir` 下 |
-| 503「没有找到 llama-server 可执行文件」 | 错误信息里会列出查找过的三个位置；用 `scripts/fetch-llama.mjs` 或手填 `llamaServerPath` |
-| 503「选中的模型已不在模型目录里」 | 模型被移动/删除，重新选一下 |
-| 一直卡在「正在加载模型…」 | 看插件日志里 llama-server 的输出（`logLevel=debug`）；多半是显存不足或 `-ngl` 太大 |
-| 加载失败，日志里出现 `n_gpu_layers already set by user to N, abort` + `cudaMalloc failed: out of memory` | **OOM + 自适应被钉住**：把「设置 → 本地模型 → GPU 层数策略」改成「自动」（这是 0.2.2+ 的默认）。`--fit` 只会调整「用户没显式设置」的参数；一旦把 `-ngl` 钉成具体数字，自适应就被跳过，模型放不下时从「少放几层」变成「直接 OOM」。同时把上下文长度调小、换更低比特量化 |
-| 模型看不到工具、不调用工具 | 检查 `jinja=true`；再试 `chatTemplate=chatml` 或指定模板文件 |
-| 切了「启用思考 / 保留历史 think」但输出没变化 | 两条前提：① llama.cpp 要支持请求体里的 `chat_template_kwargs`（2025-06 之后的构建，旧构建会忽略该字段，表现为开关无效）；② 模型模板要认 `enable_thinking` / `preserve_thinking`（带思维链的模板如 Qwen3 / Qwen3.6 才认）。`logLevel=debug` 会把「未能改写请求体」的原因打出来 |
-| 加载失败，日志里出现 `failed to load mmproj` / `clip_model_load` | 视觉投影文件与模型不配套，或路径不对。去 **设置 → 本地模型 → 视觉投影文件**，把选项恢复成「自动」让插件重新按同目录关联；纯文本模型保持「自动」即可 |
-| 对话框报 `400 "Failed to load image or audio file"`，而**同一批里有些图又能正常识别** | 失败的是 **WebP** 图片。dsh 转码时会产出 WebP 与 JPEG 两种（实测 `request-images/` 下两种都有），而 llama.cpp 内置的图像解码器**不认识 WebP** —— 它需要外部的 `ffprobe` + `ffmpeg` 来转码，而这两个是从 **PATH** 里找的（这个构建砍掉了 `--ffmpeg-path`）。判断方法：看插件日志（`logLevel=debug`）里有没有 `probe: failed to launch ffprobe` / `failed to decode webp buffer`。修法：`winget install Gyan.FFmpeg`。**0.7.0 起插件会自动找到 ffmpeg 并把它的目录前置进 llama-server 子进程的 PATH**（装完立刻生效，不必改系统 PATH、也不必为此重启 dsh）；找不到而你又开着视觉投影时，加载日志里会有一条说清「哪个格式会失败、为什么只有它、怎么修」的警告 |
-| 开了 MTP 之后，视觉投影设置变成了灰色 / 状态卡说「视觉投影已被 MTP 顶掉」 | **0.7.0 起默认不会再发生**：MTP 与视觉投影现在可以共存（`mtpWithVision` 默认开启，kvmem 分支实测支持同时加载视觉头与 MTP 草稿上下文）。看到它变灰只说明你把这个开关**关掉**了 —— 那时恢复旧的互斥行为（上游 llama.cpp 需要这样）。想同时用 MTP 和看图就把它打开；你选的 `mmprojFile` 不会被清空（见第 4 节「多 Token 预测（MTP）」） |
-| 开了 MTP，但生成速度没有任何变化 | 两条前提没同时满足：① 模型必须是**带 MTP 头的 GGUF**（文件名常带 `MTP` 字样），普通 GGUF 打开开关**零效果且不报错**；② llama.cpp 构建要支持 MTP（2026-05 之后的 PR #22673）。先看模型文件名，再看构建日期。另外草稿深度用默认值即可，调得过大反而更慢 |
-| 加载失败，日志里出现 `unknown argument: --spec-type` / `--spec-type: invalid value` | 这个 llama.cpp 构建不支持 MTP（早于 2026-05），或该构建只认别的取值。升级 llama.cpp；插件在启动前会通过 `--help` 探测并打一条「不认识这个选项」的警告，看到警告就说明是这个原因 |
-| 加载失败，日志里同时出现 MTP 与 mmproj 相关字样 | 说明命令行里同时下发了 `--spec-type` 和 `--mmproj`。**0.7.0 起这是默认行为**（kvmem 分支的 `llama-kvmem-server` 支持共存，实测两者同时加载没有问题）；如果你换回了**官方 llama.cpp**，它会因此加载失败 —— 把「MTP 与视觉共存」（`mtpWithVision`）关掉即恢复互斥。另外顺手检查 **设置 → 本地模型 → 附加参数** 里有没有手写这两个参数（会和插件下发的重复） |
-| 升级到 0.4.0 后生成风格变了（更保守 / 更容易重复 / 候选更单调） | **这是预期内的**：新增的 8 个采样参数每次加载都会显式下发，并覆盖 llama.cpp 自身默认值 —— `temp` 0.8→0.75、`top-k` 40→20、`min-p` 0.05→0、`repeat-penalty` 1.1→1.0。想退回原样，去 **设置 → 本地模型 → 采样与 KV 缓存** 把这些值填成 llama.cpp 的默认值（见第 4 节的对照表） |
-| 对话框里的「推理等级」拨哪个档位都没反应 | 先看 **设置 → 本地模型** 状态卡里的「推理档位」和日志里的「模型模板支持的推理档位」：解析不出档位表，插件就只会按开关控制思考与否，不碰档位。解析出来了还不行，就是模型模板没定义你选的那一档 —— 换个档位试试 |
-| 对话直接报 500，错误里有 `Unexpected reasoning effort xxx` | 模型模板不认这个档位值。`0.4.2` 起插件会读模板、按它支持的档位重映射，正常不会再出现；若仍出现，把日志里「模型模板支持的推理档位」那一行发出来 |
-| 选了 Off 但模型还是在思考 | 三种可能：① 用的是 `0.4.1` 及以前（会把 Off 顶回 `true`，或把 `false` 原样发给模板导致 500）；② 模型模板不认 `enable_thinking`（0.4.2 起选 Off 会下发 `{"enable_thinking": false}`，模板忽略它就仍会思考）；③ dsh 侧的档位压根没传过来。后者可以用「推理 token 预算 = 0」强制掐断思考 |
-| 升级后模型在 dsh 里「消失」或提示路由注册失败 | 新增的 `compat` / `reasoningEfforts` 声明若不被这个 dsh 版本接受，注册会失败 —— 插件不会因此影响本地端点（照旧降级为打印可粘贴的 YAML），把日志里的 `llm.<method>() 注册失败` 那一行发出来即可 |
-| 设置页里找不到「路由名 / 模型别名 / 模型 ID / 声明上下文 / 自动注册路由」了 | **0.4.0 按需求删掉了整组「接入 dsh」设置**，它们变成了 `src/configResolve.ts` 里的常量（路由名 `local-llama`、id `local`，其余恒为真/假）。功能不变，只是不可配置。其中「声明上下文」现在直接跟随 `ctxSize`，见第 4 节「接入 dsh 那些设置去哪了」 |
-| 日志说「这个 llama-server 不认识以下选项，已跳过：`--kv-stream-stage-mib`…」 | 这是**预期行为**，不是故障：这个构建没公开那一项，插件就不发过去（对未知选项直接退出的分支尤其如此）。日志里的名单可能同时包含两类：① 只有新构建才有的（`--kv-unified` / `--kv-stream-stage-mib` / `--image-*-tokens` / `--reasoning-budget`）；② 这个分支干脆没有的（`--alias`、`-ub`、`--repeat-last-n` 之类）。想用哪项就升级到支持它的构建，加载本身不受影响 |
-| 加载失败，日志里出现 `block KV streaming requires exactly one sequence (-np 1)` | KV 流式暂存要求单序列，而 llama-server 拿到的序列数不是 1。插件在开启暂存时已自动追加 `-np 1`，所以出现这条**通常说明「附加参数」里有 `-np` / `--parallel` 覆盖了它** —— 把它删掉，或把「KV 主机内存暂存」设为 0。插件已内置这条诊断，会直接给出结论而不用你读英文日志 |
-| `local_model` 工具的 `start` / `stop` 一直返回「不可用」 | **0.4.0 之后恒如此**：控制开关 `allowModelControl` 已删除、固定为假。要恢复可控，需把 `src/configResolve.ts` 里的 `ALLOW_MODEL_CONTROL` 改成 `true` 并重新构建 |
-| 设了 `kvStreamStageMib` 之后启动变慢 / 反而更容易 OOM | 这个值是「暂存到主机内存」的**上限**，取值取决于模型、上下文、显卡与其它显存占用，没有通用最优解。设得过大可能让主机内存吃紧。从保守值起步，逐步加大并观察启动情况与峰值显存；填 0 即完全不下发该参数 |
-| 长会话中途崩 | `contextWindow` 比 `ctxSize` 大；把两者对齐并留余量 |
-| 回复一卡一卡然后断开 | 设置页或路由里的 `streamIdleTimeoutMs` 太短（本地推理慢），参考第 5 节调到 600000 |
-| 显存没释放 | 看 `local_model` 工具或 `/local-model status` 的状态；确认 `idleUnloadMinutes` 不是 0 |
-| 改完设置不生效 | 端口/目录类改动需重启 dsh；模型/参数类改动被空闲卸载后或 `/local-model reload` 后会按新值生效 |
-| 找不到「参数预设」那一块，或点了预设没反应 | 它在 **设置 → 本地模型** 页最上面（置顶那条）。一片预设都没有时只有输入框 —— 输入名字点「保存为预设」。升级后没出现先看状态卡里的版本号是否为 `v0.5.2`，再跑 `npm run verify` |
-| 点预设提示「找不到这个预设，可能已被删除」 | 另一个标签页/窗口把这组预设删掉了。点「刷新状态」重新拉一次即可 |
-| 预设里怎么没有端口 / 模型目录 / 密钥 | **设计如此，不是漏了**：这 9 项属于「这台机器」而不属于「这套参数」，切换预设时保持原样（否则切一次参数就把端口换了）。作用域见第 4 节「参数预设」 |
-| 应用预设之后模型被卸载并重新加载了一次 | 预期行为：它与「保存设置」走同一条路径 —— 参数变了就卸载，下次对话按新参数加载 |
-| 设置页有元素叠在一起 / 输入框被「默认」按钮压住 | `0.5.1` 已修（面板可用宽度只有 564px，旧的 `maxWidth: 720` + 裸 `1fr` 三列在窄窗口下会换行重叠）。若升级后仍有，先确认状态卡里的版本号是 `v0.5.2`；再跑 `node scripts/client-check.mjs`，两套「布局」用例会直接指出是哪条样式约束被破坏了 |
-| 预设条滚起来上边缘被切 / 盖住面板标题 | 同上，`0.5.1` 已修。相关的三条约束（不透明背景、横向盖满 24px 内边距、`isolation: isolate`）见 `client/src/styles.js` 的 `cardPinned` |
-| **整块设置项是半透明的，下层卡片的文字透上来叠字** | `0.5.2` 已修。根因是插件引用了宿主不存在的 `--color-*` 变量，`var()` 静默落到 `transparent` 兜底（详见「颜色变量」一节）。先确认版本号是 `v0.5.2`；再跑 `node scripts/client-check.mjs`，「主题」三条用例会直接报出是哪个变量或哪个容器背景不对 |
-| 深色主题下主按钮黑底黑字 / 输入框看不见底 | 同上，`0.5.2` 已修（`--color-text-primary` 落空到 `#111`、`--color-background-secondary` 落空到 `transparent`） |
-| 预设建不出来（说名称重复 / 为空） | 名称不能为空、不能重复（不区分大小写），最长 40 字，最多 100 组。换个名字或先删掉旧的 |
-| 面板提示「预设文件解析失败，已按「没有预设」处理」 | `state/presets.json` 被外部改坏了。插件不会因此起不来、模型加载也不受影响，只是那批预设读不回来；删掉该文件即可从头再来 |
+| Plugin management shows "installed, not active" | Two causes: ① `package.json` does not declare `dsh.bundle`, or the declaration shape is wrong (correct shape in Section 2); ② the package is not registered in the profile's `dsh.profile.bundles`. Run `npm run verify` to locate directly, then `dsh plugin --profile <name> add <this plugin path>` once to complete |
+| Plugin is active, but **no "Local model" in settings** | ① dsh not restarted after changing manifest (bundle composition is fixed at startup); ② `dsh.client` missing or `exports["./client"]` not pointing to the artifact — run `npm run verify` and `npm run test:client` to self-check |
+| Settings panel opens blank / keeps "Reading configuration…" | Look at the browser console for the return of `/api/local-model/state`. If 403, you are accessing via LAN address — the panel deliberately only serves local (see Section 4) |
+| Changed settings in the panel have no effect | After saving, the model is unloaded once, and the next conversation loads with new parameters; confirm you clicked "Save" rather than just changed the input box (the bottom shows the number of unsaved items) |
+| Behavior unchanged after changing code / rebuilding | Bundle composition is fixed at dsh **startup**: installing, uninstalling, updating all require restarting the profile. Client bundles too; after changes `npm run build:client` then restart |
+| Load failure, log shows `error while handling argument "--xxx": unknown value for --xxx: '--yyy'` | **Parameter shape mismatch**: the parser ate the next parameter as the previous one's value. The plugin has built-in detection and auto-retry (see Section 4); if you still encounter it on an old version, upgrade to 0.2.1+; diagnose with `npm run verify:llama` |
+| Load failure after switching llama branch, log shows `unknown flag: --alias` (or `-ub` / `--repeat-last-n` / `-t` / `--no-mmap` / `--api-key`) | This branch is **not** llama.cpp's `llama-server` (e.g. a standalone OpenAI-compatible server like `llama-kvmem-server.exe`); its option table is only a subset of llama.cpp, and it directly exits 1 for unknown options. The plugin probes by `--help` before startup and skips options it does not recognize (0.5.3+); the log shows "Skipped: --alias, -ub, …"; upgrade to that version. If you are on an old version, a temporary measure is to switch back to the official llama.cpp build in "Settings → Local model → llama-server path" |
+| Load failure, log shows `invalid --seed: seed out of range [0, 4294967295]` | This branch validates `--seed` as uint32, and the plugin's default value is `-1` (= random). Since 0.5.3+ **negative numbers never send this parameter** (equivalent to "random": llama.cpp's default was `-1` to begin with), so it will no longer appear; on old versions, fill "random seed" with 0 or any positive number to bypass |
+| **Every** conversation fails, returns `400 {"error":"prompt + max_tokens exceeds n_ctx"}` | **This is a mismatch between dsh-side route declaration and launch parameters**, not a broken model. That standalone kvmem server judges `prompt + max_tokens > n_ctx` as a hard error (upstream llama.cpp only warns then converges on its own), and the error contains **neither prompt length nor n_ctx**. The most common cause is that the **hand-written** route in `settings.yaml` fills `contextWindow` / `maxTokens` larger than the actual `-c` (measured: declared `maxTokens: 128000`, actual `-c 32768`, so `128000 > 32768` always holds, every message must fail). Three steps to resolve: ① Look at **Settings → Local model → Context length** (or the plugin log line "Launched: … `-c` N") to get the real `n_ctx`; ② Change that model's `contextWindow` to this value, `maxTokens` to about 1/4 of it (e.g. 32768 / 8192); ③ **0.6.0+ has built-in fallback**: `guardContextOverflow` (on by default) preventively clamps certainly-failing oversized limits, and retries with halving step by step after server rejection; the log shows "Clamped output limit from X to Y and retried" |
+| Model "stops mid-sentence" / every reply is especially short (clearly not at context limit) | Look at **Settings → Local model → KVMem block cache → Decode reserve (`--kvmem-gen-reserve`)**. It is the **single generation limit** in kvmem (including thinking), and this build's default is only **256** — without setting it, each reply can write at most 256 tokens, and **no error of any kind**. Set it to not less than "maximum output tokens per run" (e.g. 8192～16384). There is a dedicated reminder in the load log; seeing "Decode reserve… currently 256" means this problem |
+| Want to tune KVMem's block retrieval (budget / block size / retrieval algorithm / NVMe overflow…) | 0.6.0+ added an entire group of "**KVMem block cache (kvmem branch exclusive)**" to the settings page, 18 items total, corresponding to the `--kvmem-*` family; plus a "Multi-Token Prediction (MTP) details" group (`--spec-kv-dtype` / `--spec-draft-n-max` / `--spec-draft-p-min`). **All defaults in the whole group are "do not send"** (numeric items filled with `-1`, strings left empty); not touching them equals using the build's own default behavior. These are kvmem branch exclusive parameters; on official llama.cpp builds they are skipped as a whole and explained in the log |
+| Want to know "will my llama.cpp accept the parameters sent by the plugin" | Run `npm run verify:llama`. It reads your real configuration, assembles parameters, really starts llama-server once (model swapped for a non-existent sentinel path, so no VRAM occupied), and gives pass/fail with the full command line |
+| Request returns 503 "No local model selected yet" | Go to **Settings → Local model** and select a model; the model must be placed under `modelsDir` |
+| 503 "llama-server executable not found" | The error message lists the three locations searched; use `scripts/fetch-llama.mjs` or manually fill `llamaServerPath` |
+| 503 "Selected model no longer in model directory" | Model was moved/deleted; select again |
+| Stuck on "Loading model…" forever | Look at llama-server's output in the plugin log (`logLevel=debug`); probably insufficient VRAM or `-ngl` too large |
+| Load failure, log shows `n_gpu_layers already set by user to N, abort` + `cudaMalloc failed: out of memory` | **OOM + adaptation pinned**: change "Settings → Local model → GPU layers policy" to "Auto" (this is the default since 0.2.2+). `--fit` only adjusts parameters "not explicitly set by the user"; once `-ngl` is pinned to a specific number, adaptation is skipped, and when the model does not fit it goes from "place fewer layers" to "direct OOM". At the same time reduce context length and switch to lower-bit quantization |
+| Model cannot see tools, does not call tools | Check `jinja=true`; then try `chatTemplate=chatml` or specify a template file |
+| Toggled "Enable thinking / Preserve historical think" but output unchanged | Two preconditions: ① llama.cpp must support `chat_template_kwargs` in the request body (builds after 2025-06; old builds ignore the field, manifesting as toggle ineffective); ② the model template must recognize `enable_thinking` / `preserve_thinking` (only templates with thinking chains like Qwen3 / Qwen3.6 recognize them). `logLevel=debug` prints the reason for "failed to rewrite request body" |
+| Load failure, log shows `failed to load mmproj` / `clip_model_load` | Vision projection file and model do not match, or path is wrong. Go to **Settings → Local model → Vision projection file**, restore the option to "Auto" and let the plugin re-associate by same directory; pure text models can keep "Auto" |
+| Dialog box reports `400 "Failed to load image or audio file"`, while **some images in the same batch are recognized normally** | What is failing is **WebP** images. dsh produces both WebP and JPEG during transcoding (in practice both are present under `request-images/`), and llama.cpp's built-in image decoder **does not recognize WebP** — it needs external `ffprobe` + `ffmpeg` for transcoding, and these two are found from **PATH** (this build dropped `--ffmpeg-path`). How to judge: look at the plugin log (`logLevel=debug`) for `probe: failed to launch ffprobe` / `failed to decode webp buffer`. Fix: `winget install Gyan.FFmpeg`. **Since 0.7.0, the plugin automatically finds ffmpeg and prepends its directory to the PATH of the llama-server subprocess** (takes effect immediately after installation, no system PATH change needed, no dsh restart needed for this); if it cannot be found while you have vision projection on, there is a warning in the load log explaining "which format will fail, why only that one, how to fix" |
+| After enabling MTP, the vision projection setting turned gray / status card says "Vision projection was pushed out by MTP" | **Since 0.7.0 this does not happen by default**: MTP and vision projection can now coexist (`mtpWithVision` on by default; kvmem branch measured to support simultaneous loading of vision head and MTP draft context). Seeing it gray only means you turned **off** this toggle — then the old mutual exclusion behavior is restored (upstream llama.cpp needs that). To use MTP and images simultaneously, turn it on; your chosen `mmprojFile` is not cleared (see Section 4 "Multi-Token Prediction (MTP)") |
+| Enabled MTP but generation speed did not change at all | The two preconditions are not met simultaneously: ① the model must be a **GGUF with an MTP head** (filename often contains `MTP` characters); enabling the toggle on an ordinary GGUF has **zero effect and no error**; ② the llama.cpp build must support MTP (PR #22673 after 2026-05). First look at the model filename, then the build date. Also draft depth can use the default value; tuning it too large is actually slower |
+| Load failure, log shows `unknown argument: --spec-type` / `--spec-type: invalid value` | This llama.cpp build does not support MTP (before 2026-05), or the build only recognizes other values. Upgrade llama.cpp; the plugin probes by `--help` before startup and prints a "does not recognize this option" warning; seeing the warning means this is the cause |
+| Load failure, log simultaneously shows MTP and mmproj-related words | Means the command line sent both `--spec-type` and `--mmproj`. **Since 0.7.0 this is the default behavior** (the kvmem branch's `llama-kvmem-server` supports coexistence; measured that simultaneous loading of both has no problem); if you switched back to **official llama.cpp**, it will fail to load because of this — turn off "MTP and vision coexistence" (`mtpWithVision`) to restore mutual exclusion. Also check **Settings → Local model → Extra parameters** for hand-written versions of these two parameters (they would duplicate what the plugin sends) |
+| After upgrading to 0.4.0, generation style changed (more conservative / more prone to repetition / candidates more monotonous) | **This is expected**: the 8 new sampling parameters are explicitly sent on every load, overriding llama.cpp's own defaults — `temp` 0.8→0.75, `top-k` 40→20, `min-p` 0.05→0, `repeat-penalty` 1.1→1.0. To revert to the original, go to **Settings → Local model → Sampling and KV cache** and fill these values with llama.cpp's defaults (see the comparison table in Section 4) |
+| Toggling any tier of "reasoning level" in the dialog box has no response | First look at "Reasoning tier" in the status card of **Settings → Local model** and "Reasoning tiers supported by the model template" in the log: if the tier table cannot be parsed, the plugin only controls thinking on/off via the toggle and does not touch tiers. If it was parsed and still doesn't work, the model template did not define the tier you chose — try a different tier |
+| Conversation directly reports 500, error contains `Unexpected reasoning effort xxx` | The model template does not recognize this tier value. Since `0.4.2`, the plugin reads the template and remaps by the tiers it supports; normally it will no longer appear; if it still appears, send out the log line "Reasoning tiers supported by the model template" |
+| Selected Off but the model is still thinking | Three possibilities: ① using `0.4.1` or earlier (presses Off back to `true`, or sends `false` as-is to the template causing 500); ② the model template does not recognize `enable_thinking` (since 0.4.2, selecting Off sends `{"enable_thinking": false}`; if the template ignores it, it still thinks); ③ the dsh-side tier was not passed at all. The latter can force-cut thinking with "reasoning token budget = 0" |
+| After upgrade, model "disappears" in dsh or route registration failure is reported | If the new `compat` / `reasoningEfforts` declarations are not accepted by this dsh version, registration fails — the plugin does not affect the local endpoint because of this (degrades as before to printing pasteable YAML); just send out the log line `llm.<method>() registration failed` |
+| Cannot find "Route name / Model alias / Model ID / Declared context / Auto-register route" in the settings page | **0.4.0 deleted the entire "dsh integration" settings group as requested**; they became constants in `src/configResolve.ts` (route name `local-llama`, id `local`, rest always true/false). Function unchanged, just not configurable. Among them "Declared context" now directly follows `ctxSize`; see Section 4 "Where did the dsh integration settings go" |
+| Log says "This llama-server does not recognize the following options; skipped: `--kv-stream-stage-mib`…" | This is **expected behavior**, not a fault: this build does not expose that item, so the plugin does not send it (especially for branches that directly exit on unknown options). The list in the log may contain both kinds simultaneously: ① only present in new builds (`--kv-unified` / `--kv-stream-stage-mib` / `--image-*-tokens` / `--reasoning-budget`); ② this branch simply does not have (`--alias`, `-ub`, `--repeat-last-n`, etc.). To use an item, upgrade to a build that supports it; loading itself is unaffected |
+| Load failure, log shows `block KV streaming requires exactly one sequence (-np 1)` | KV streaming staging requires single sequence, and the sequence count llama-server received is not 1. The plugin already auto-appends `-np 1` when staging is enabled, so this appearing **usually means "extra parameters" has `-np` / `--parallel` overriding it** — delete it, or set "KV host memory staging" to 0. The plugin has this diagnostic built in and gives the conclusion directly without you reading English logs |
+| `local_model` tool's `start` / `stop` always returns "unavailable" | **Always so since 0.4.0**: control toggle `allowModelControl` deleted, fixed to false. To restore controllability, change `ALLOW_MODEL_CONTROL` in `src/configResolve.ts` to `true` and rebuild |
+| After setting `kvStreamStageMib`, startup got slower / more prone to OOM instead | This value is the **upper limit** of "staging to host memory"; the value depends on model, context, graphics card, and other VRAM occupancy; there is no universal optimum. Setting it too large may make host memory tight. Start from a conservative value, gradually increase and observe startup and peak VRAM; fill 0 to not send this parameter at all |
+| Crashes mid-long-conversation | `contextWindow` larger than `ctxSize`; align the two and leave margin |
+| Reply stutters then disconnects | `streamIdleTimeoutMs` in settings page or route is too short (local inference slow); refer to Section 5 and set to 600000 |
+| VRAM not released | Look at the status of the `local_model` tool or `/local-model status`; confirm `idleUnloadMinutes` is not 0 |
+| Changed settings have no effect | Port/directory-type changes require restarting dsh; model/parameter-type changes take effect with new values after idle unload or `/local-model reload` |
+| Cannot find the "Parameter presets" block, or clicking a preset has no response | It is at the very top of the **Settings → Local model** page (the pinned one). When there are no presets at all, only the input box — enter a name and click "Save as preset". If it does not appear after upgrade, first check if the version number in the status card is `v0.5.2`, then run `npm run verify` |
+| Clicking a preset prompts "Preset not found; may have been deleted" | Another tab/window deleted this preset group. Click "Refresh status" to re-fetch |
+| Why no port / model directory / key in presets | **By design, not a miss**: these 9 items belong to "this machine", not "this set of parameters"; switching presets keeps them as-is (otherwise one parameter switch would change the port). Scope in Section 4 "Parameter presets" |
+| After applying a preset, the model was unloaded and reloaded once | Expected behavior: it goes through the same path as "Save Settings" — parameters changed means unload, next conversation loads with new parameters |
+| Elements on the settings page overlap / input box pressed by "Default" button | Fixed in `0.5.1` (panel usable width only 564px; old `maxWidth: 720` + bare `1fr` three columns wrap and overlap on narrow windows). If still present after upgrade, first confirm the version number in the status card is `v0.5.2`; then run `node scripts/client-check.mjs`, and the two "layout" test suites directly point out which style constraint was broken |
+| Preset bar's top edge cut off when scrolling / covers panel title | Same as above, fixed in `0.5.1`. The three related constraints (opaque background, horizontally covering 24px padding, `isolation: isolate`) see `cardPinned` in `client/src/styles.js` |
+| **Whole settings block is semi-transparent, lower card text shows through and overlaps** | Fixed in `0.5.2`. Root cause was the plugin referencing `--color-*` variables that do not exist in the host; `var()` silently fell to the `transparent` fallback (see "Color variables" section for details). First confirm the version number is `v0.5.2`; then run `node scripts/client-check.mjs`, and the three "theme" test suites directly report which variable or container background is wrong |
+| Dark theme main button black-on-black / input box bottom invisible | Same as above, fixed in `0.5.2` (`--color-text-primary` falls through to `#111`, `--color-background-secondary` falls through to `transparent`) |
+| Preset cannot be created (says name duplicate / empty) | Name cannot be empty, cannot duplicate (case-insensitive), max 40 characters, max 100 groups. Change the name or delete the old one first |
+| Panel prompts "Preset file failed to parse; treated as 'no presets'" | `state/presets.json` was externally corrupted. The plugin does not fail to start because of this, and model loading is unaffected; only that batch of presets cannot be read back; just delete the file to start over |
 
-## 9. 开发与测试
+## 9. Development and testing
 
 ```bash
-npm run build       # tsc → lib/，再打包客户端 bundle → client/client.js
-npm run build:client # 只重打浏览器半侧（改 client/src 后用它）
-npm run verify      # 清单自检：bundle 合法性 + 客户端半侧合规 + 在哪些 profile 装了却没生效
-npm run verify:llama # 参数验收：拿本机的 llama-server 真起一次，确认它接受插件下发的参数
-npm test            # 下面五套全跑（共 180 项：单测 118 + e2e 13 + 加载 32 + 客户端 17 + 清单 12 项检查）
-npm run test:client # 浏览器 bundle：用假 loader 真加载一遍，校验格式、插槽注册与预设条契约
-npm run test:load   # 类宿主跑 apply()：目录骨架、代理端口、设置面板数据面、参数预设与安全约束
-npm run test:unit   # 参数拼装 / 能力探测 / 分片归并 / 路径与配置解析 / 参数预设读写
-npm run test:e2e    # 真进程跑完整加载与空闲卸载生命周期
+npm run build       # tsc → lib/, then bundle client bundle → client/client.js
+npm run build:client # Only re-bundle browser half-side (use after changing client/src)
+npm run verify      # Manifest self-check: bundle validity + client half-side compliance + in which profiles installed but not active
+npm run verify:llama # Parameter acceptance: really start the local llama-server once, confirm it accepts the parameters sent by the plugin
+npm test            # Runs all five suites below (180 items total: 118 unit + 13 e2e + 32 load + 17 client + 12 manifest checks)
+npm run test:client # Browser bundle: really loads once with a fake loader, verifying format, slot registration, and preset bar contract
+npm run test:load   # Host-like running apply(): directory skeleton, proxy port, settings panel data plane, parameter presets and security constraints
+npm run test:unit   # Parameter assembly / capability detection / shard merging / path and configuration parsing / parameter preset read-write
+npm run test:e2e    # Real process runs full load and idle unload lifecycle
 ```
 
-**参数验收**（`verify-llama.mjs`）是排查「加载不起来」最快的入口：它按你的实际配置拼参数、
-真的把 llama-server 起一次（模型换成一个不存在的哨兵路径，因此不会占显存），
-从而把「参数被拒绝」和「模型/显存问题」这两类故障一次分开：
+**Parameter acceptance** (`verify-llama.mjs`) is the fastest entry for troubleshooting "cannot load": it assembles parameters with your real configuration,
+really starts llama-server once (model swapped for a non-existent sentinel path, so no VRAM occupied),
+thereby separating the two kinds of failures "parameters rejected" and "model/VRAM problem" at once:
 
 ```
-构建能力：识别到 417 个选项，flash-attn 形状为 value
-将要下发的参数：… --flash-attn on --jinja
-✓ 下发的选项这个构建全都认识
-✓ 参数被接受（失败点已经走到读模型这一步，说明参数解析全部通过）
+Build capability: 417 options recognized, flash-attn shape is value
+Parameters to be sent: … --flash-attn on --jinja
+✓ All sent options are recognized by this build
+✓ Parameters accepted (the failure point has reached the model-reading stage, meaning all parameter parsing passed)
 ```
 
-**客户端校验**（`client-check.mjs`）用假的 `window.__ModuleLoader__` 与假的 `react` 把产物跑一遍：
+**Client verification** (`client-check.mjs`) runs the artifact once with a fake `window.__ModuleLoader__` and a fake `react`:
 
 ```
-✓ 产物能被 dsh 的模块加载器接收              ✓ 工厂 id 等于包名
-✓ 外部依赖都走注入的 require（react 没被打进包） ✓ 导出 apply / inject，且没有 default 导出
-✓ apply 注册了 id 为 local-model 的 settings.section ✓ 侧栏标题取词为「本地模型」
-✓ 注册的一切都可逆（mounted / disposer）
-✓ 预设：客户端调的 5 条路由宿主侧全都有（防两边路径悄悄错位）
-✓ 预设：预设条排在状态卡之前（「固定在顶部」这条需求由测试钉住）
-✓ 预设快照：草稿优先 / 空数字回落 / 字符串空值保留
+✓ Artifact can be accepted by dsh's module loader              ✓ Factory id equals package name
+✓ External dependencies all go through injected require (react not bundled) ✓ Exports apply / inject, no default export
+✓ apply registered settings.section with id local-model ✓ Sidebar title word is "Local model"
+✓ Everything registered is reversible (mounted / disposer)
+✓ Presets: the 5 routes the client calls all exist on the host side (prevents the two sides' paths from quietly drifting)
+✓ Presets: preset bar is before the status card (the "fixed at top" requirement is pinned by tests)
+✓ Preset snapshot: draft priority / empty number fallback / string empty value preserved
 ```
 
-**加载验证**（`load-check.mjs`）在临时目录里搭一个假 profile，让 `@deepseek-ai/schemastery`
-指回**本机真实的 schemastery**（不是自造的桩），把编译产物拷进去加载，钉死 dsh 的硬约定并顺带
-把设置面板的数据面与参数预设也验一遍：
+**Load verification** (`load-check.mjs`) builds a fake profile in a temporary directory, pointing `@deepseek-ai/schemastery`
+back to the **real local schemastery** (not a self-made stub), copies compiled artifacts in to load, pins down dsh's hard conventions and incidentally
+also verifies the settings panel data plane and parameter presets:
 
 ```
-✓ 导出符号齐全 / 没有默认导出 / schema 能产出默认值     ✓ 宿主服务全缺失时 apply() 仍能跑起来
-✓ 目录骨架与放置说明被创建                              ✓ 代理端口可监听、状态端点可访问
-✓ 表单分组 ≥5 组、字段 ≥30 且文案来自 schema             ✓ 保存落盘并即时生效；恢复默认清空用户层
-✓ 预设：存 / 读 / 应用 / 改名 / 覆盖 / 删除全链路        ✓ 预设：环境字段被挡在预设之外（端口不受影响）
-✓ 预设：重名与空值有可读报错，失败不留半条记录            ✓ 预设：重启后仍能读回同一个文件
-✓ 拒绝非本机来源（403，含预设接口）                      ✓ 写操作要求 JSON content-type（415）
-✓ 只接受 GET/POST（405）；非法 JSON 有明确报错           ✓ 卸载时端口被释放
+✓ Export symbols complete / no default export / schema can produce defaults     ✓ apply() still runs when all host services are missing
+✓ Directory skeleton and placement instructions created                              ✓ Proxy port listenable, status endpoint accessible
+✓ Form groups ≥5, fields ≥30 and text from schema             ✓ Save persists and takes effect immediately; restore defaults clears user layer
+✓ Presets: save / read / apply / rename / overwrite / delete full chain        ✓ Presets: environment fields blocked outside presets (port unaffected)
+✓ Presets: duplicate names and empty values have readable errors, failures leave no half record            ✓ Presets: can still read back the same file after restart
+✓ Rejects non-local origin (403, including preset interface)                      ✓ Write operations require JSON content-type (415)
+✓ Only accepts GET/POST (405); invalid JSON has clear error           ✓ Port released on unload
 ```
 
-**端到端测试**用 `scripts/fixtures/fake-llama-server.mjs` 顶替 llama-server，但走的是**真实的
-spawn / 健康探测 / 进程树 kill 流程**：
+**End-to-end tests** use `scripts/fixtures/fake-llama-server.mjs` to stand in for llama-server, but go through the **real
+spawn / health probe / process tree kill flow**:
 
 ```
-✓ 初始化后不拉起进程（不占显存）        ✓ 首条对话自动拉起 → 等就绪 → 原样转发
-✓ 4 个并发请求只 spawn 1 次（单飞）      ✓ SSE 流式逐块透传
-✓ 空闲后进程被回收、端口被释放           ✓ 卸载后能再次拉起（可反复）
-✓ 未选模型 / 缺 llama-server 的报错可操作 ✓ 卸载插件时清理进程与端口
+✓ No process launched after initialization (no VRAM occupied)        ✓ First conversation auto-launches → waits ready → forwards as-is
+✓ 4 concurrent requests only spawn once (single-flight)      ✓ SSE streaming passes through block by block
+✓ Process reclaimed and port released after idle           ✓ Can be launched again after unload (repeatable)
+✓ Actionable errors for no model selected / missing llama-server ✓ Cleans up process and port on plugin unload
 ```
 
-### 目录结构
+### Directory structure
 
 ```
-package.json         dsh.bundle.patch → cordis.patch.yml；dsh.client → client/client.js
-cordis.patch.yml     bundle patch：把插件行 insert 进 profile 的插件树
-src/                 宿主侧（Node）
-├── index.ts          插件入口：name / inject / Config / apply（只用具名导出）
-├── config.ts         设置项的唯一真源（schemastery schema，50 个字段）
-├── configResolve.ts  配置解析：路径占位符、区间收敛（无宿主依赖，可单独测）
-├── configStore.ts    用户层配置读写 + 写入白名单/类型闸门
-├── presets.ts        参数预设：作用域定义 + 落盘（独立于 schemastery，可单独测）
-├── paths.ts          $DSH_HOME 与目录约定、首次初始化
-├── schemaForm.ts     把 schema 序列化成设置面板的表单描述（含分组）
-├── webBridge.ts      同源 HTTP 数据面（状态 / 配置 / 操作 / 预设），回环 + JSON 约束
-├── registry.ts       模型扫描：GGUF 分片归并、量化/参数量识别、mmproj 关联与选择
-├── requestRewrite.ts 请求体改写：思考开关（chat_template_kwargs + 历史 think 剥离）
-├── lifecycle.ts      状态机：单飞加载、空闲卸载、崩溃自愈、热改配置
-├── proxy.ts          常驻入口：首请求触发加载、SSE 透传、状态端点、按开关改写请求体
-├── llmBridge.ts      接入 dsh llm 缝（探测 + 降级）
-├── tools.ts          local_model 工具（status / list / start / stop）
-└── commands.ts       /local-model 命令（status / list / start / stop / reload / route）
-client/src/          浏览器半侧
-├── index.jsx         注册 settings.section 一级页面 + 词条
-├── section.jsx       面板：预设条、状态、模型/视觉投影下拉（MTP 开启时置灰）、按 schema 渲染的分组表单
-├── presets.jsx       置顶的「参数预设」条：保存 / 应用 / 改名 / 覆盖 / 删除
-├── presetSnapshot.js 预设快照的纯逻辑（可被 node 直接单测）
-├── layoutCheck.js    布局几何 + 主题变量自检规则（防元素重叠 / 防宿主变量用错，被 client-check 调用）
-├── api.js            同源 fetch
-└── styles.js         内联样式（不引 CSS modules，少一个加载失败面）
+package.json         dsh.bundle.patch → cordis.patch.yml; dsh.client → client/client.js
+cordis.patch.yml     Bundle patch: insert the plugin line into the profile's plugin tree
+src/                 Host side (Node)
+├── index.ts          Plugin entry: name / inject / Config / apply (named exports only)
+├── config.ts         Single source of truth for settings items (schemastery schema, 50 fields)
+├── configResolve.ts  Configuration resolution: path placeholders, range convergence (no host dependencies, testable standalone)
+├── configStore.ts    User layer configuration read-write + write whitelist/type gate
+├── presets.ts        Parameter presets: scope definition + persistence (independent of schemastery, testable standalone)
+├── paths.ts          $DSH_HOME and directory conventions, first-time initialization
+├── schemaForm.ts     Serialize schema into settings panel form description (including groups)
+├── webBridge.ts      Same-origin HTTP data plane (state / config / operations / presets), loopback + JSON constraints
+├── registry.ts       Model scanning: GGUF shard merging, quantization/parameter count recognition, mmproj association and selection
+├── requestRewrite.ts Request body rewriting: thinking toggles (chat_template_kwargs + historical think stripping)
+├── lifecycle.ts      State machine: single-flight load, idle unload, crash self-healing, hot configuration change
+├── proxy.ts          Resident entry: first request triggers load, SSE passthrough, status endpoint, rewrite request body by toggle
+├── llmBridge.ts      dsh llm seam integration (probe + degradation)
+├── tools.ts          local_model tool (status / list / start / stop)
+└── commands.ts       /local-model commands (status / list / start / stop / reload / route)
+client/src/          Browser half-side
+├── index.jsx         Register settings.section top-level page + words
+├── section.jsx       Panel: preset bar, status, model/vision projection dropdown (grayed out when MTP on), schema-rendered group form
+├── presets.jsx       Pinned "Parameter presets" bar: save / apply / rename / overwrite / delete
+├── presetSnapshot.js Pure logic of preset snapshot (can be unit-tested directly by node)
+├── layoutCheck.js    Layout geometry + theme variable self-check rules (prevent element overlap / prevent host variable misuse, called by client-check)
+├── api.js            Same-origin fetch
+└── styles.js         Inline styles (no CSS modules, one less load failure surface)
 scripts/
-├── verify-bundle.mjs 清单自检（bundle + client + profile 挂载状态）
-├── verify-llama.mjs  参数验收（拿真 llama-server 跑一次参数解析）
-├── build-client.mjs  esbuild 打包 + 套 lazy-CJS factory 外壳
-├── client-check.mjs  假 loader 加载校验 + 预设契约、快照逻辑与布局几何自检
-├── load-check.mjs    类宿主环境加载验证
-├── selftest.mjs      纯逻辑单元自检（含参数预设的读写与容错）
-├── e2e.mjs           真进程端到端
-└── fetch-llama.mjs   下载 llama.cpp 运行时
+├── verify-bundle.mjs  Manifest self-check (bundle + client + profile mount status)
+├── verify-llama.mjs  Parameter acceptance (run parameter parsing once with real llama-server)
+├── build-client.mjs  esbuild bundling + wrap lazy-CJS factory shell
+├── client-check.mjs  Fake loader load verification + preset contract, snapshot logic and layout geometry self-check
+├── load-check.mjs    Host-like environment load verification
+├── selftest.mjs      Pure logic unit self-check (including parameter preset read-write and fault tolerance)
+├── e2e.mjs           Real process end-to-end
+└── fetch-llama.mjs   Download llama.cpp runtime
 ```
 
-## 10. 已知限制与版本适配
+## 10. Known limitations and version adaptation
 
-dsh 目前处于开发者预览期，接口仍在变动，因此**所有宿主集成点都做了显式降级，宁可少做也不报错**：
+dsh is currently in the developer preview period, interfaces are still changing, so **all host integration points have explicit degradation; better to do less than report errors**:
 
-- 本插件 `inject` 为空：`llm` / `tools` / `commands` / `timer` 全部通过 `ctx.get()` 读取，
-  缺失或接口对不上时只跳过对应增强，**模型加载与空闲卸载这条主线始终可用**。
-- `llmBridge` 会依次探测 `registerProvider / upsertProvider / registerRoute / addRoute / setRoute`，
-  全都不匹配时打印可直接粘贴的 `settings.yaml` 片段（第 5 节），而不是失败。
-- `/local-model` 命令同时挂了 `execute` 和 `run` 两种入口名，以适配不同版本的 commands 服务。
-- `src/commands.ts` 与 `/local-model status` 的输出格式可能随宿主调整而调整 —— 它们只是便利功能，
-  真实状态以 `GET http://127.0.0.1:18080/local-model/status` 为准。
-- `types/dsh-ambient.d.ts` 是**离线编译用**的环境声明（只覆盖本插件用到的接口）。
-  在 dsh 仓库内开发时以主仓库的真实类型为准；若出现重复声明告警，把它从 `tsconfig.json`
-  的 `include` 里去掉即可。
-- 未做：多模型同时常驻（严格一次一个，符合"释放资源"的目标）、图像输入透传的端到端验证、
-  Windows 上 llama-server 的优雅退出（llama.cpp 无状态可刷，直接结束进程树）。
+- This plugin's `inject` is empty: `llm` / `tools` / `commands` / `timer` all read via `ctx.get()`;
+  when missing or interface mismatch, only the corresponding enhancement is skipped, and **the main line of model loading and idle unload is always available**.
+- `llmBridge` probes `registerProvider / upsertProvider / registerRoute / addRoute / setRoute` in sequence;
+  when none match, prints a directly pasteable `settings.yaml` fragment (Section 5), not failing.
+- The `/local-model` command has both `execute` and `run` entry names, to adapt to different versions of the commands service.
+- The output format of `src/commands.ts` and `/local-model status` may change with host adjustments — they are just convenience features;
+  the real status is based on `GET http://127.0.0.1:18080/local-model/status`.
+- `types/dsh-ambient.d.ts` is an environment declaration **for offline compilation** (only covers the interfaces this plugin uses).
+  When developing inside the dsh repo, take the main repo's real types as authoritative; if duplicate declaration warnings appear, just remove it from
+  `tsconfig.json`'s `include`.
+- Not done: multiple models resident simultaneously (strictly one at a time, matching the "release resources" goal), end-to-end verification of image input passthrough,
+  graceful shutdown of llama-server on Windows (llama.cpp has no state to flush; directly kill the process tree).
 
-### 浏览器半侧是复刻的构建，不是官方预设
+### The browser half-side is a replicated build, not an official preset
 
-dsh 官方明确说明产出 `dsh.client` bundle 的 `clientBundle` 预设**不在已发布的包里**，
-仓库之外的插件必须自己复刻。本项目的复刻落在 `scripts/build-client.mjs`：esbuild 打成 CJS
-（`react` / `react/jsx-runtime` 全部 external，由宿主提供），再手工套上
-`window.__ModuleLoader__.load({ id, factory })` 外壳；形状是拿本机三个**已经在生效**的
-`dsh.client` 包的产物逐字节对照出来的，并由 `npm run test:client` 用假 loader 真跑一遍守住。
-升级 dsh 后如果设置页不出现，先跑这两个脚本，再检查 `dsh.client.inject` 里的客户端包名是否仍然存在。
+dsh officially clearly states that the `clientBundle` preset producing the `dsh.client` bundle is **not in a published package**;
+plugins outside the repo must replicate it themselves. This project's replication is in `scripts/build-client.mjs`: esbuild bundles to CJS
+(all `react` / `react/jsx-runtime` external, provided by the host), then manually wraps with
+`window.__ModuleLoader__.load({ id, factory })` shell; the shape was compared byte by byte against the artifacts of three **already active**
+local `dsh.client` packages, and `npm run test:client` runs it once with a fake loader to guard it.
+If the settings page does not appear after upgrading dsh, first run these two scripts, then check whether the client package name in `dsh.client.inject` still exists.
 
-面板的数据面是**自建的同源 HTTP 桥**而不是 dsh 的 settings 命名空间（原因见第 4 节），
-因此设置写在插件自己的 `<DSH_HOME>/local-model/state/config.json` 里。这是刻意的取舍：
-它不依赖宿主内部接口的版本，代价是这些设置不出现在 `settings.yaml` 中，也就不能跟着
-dsh 的凭据/同步机制走。桥只服务回环来源 —— 通过局域网访问 dsh 时面板不可用。
+The panel's data plane is **a self-built same-origin HTTP bridge**, not dsh's settings namespace (reason in Section 4),
+so settings are written to the plugin's own `<DSH_HOME>/local-model/state/config.json`. This is a deliberate trade-off:
+it does not depend on the version of host internal interfaces; the cost is that these settings do not appear in `settings.yaml`, and therefore cannot follow
+dsh's credential/sync mechanism. The bridge only serves loopback origin — when accessing dsh via LAN, the panel is unavailable.
 
-界面文案目前是中文硬编码（只额外注册了中英两份分区标题词条）。
+The UI text is now in English (section titles are registered for both zh and en).
 
-### 本包的 manifest 是按实机对照确认的
+### This package's manifest was confirmed by real-machine comparison
 
-`dsh.bundle` 与 `dsh.client` 的形状不是照文档猜的，是拿本机几个**已经在生效**的第三方插件
-逐个字段对出来的（`dshmarket`、`@linxin666/dsh-web-all`、`dsh-better-sidebar`）：
+The shapes of `dsh.bundle` and `dsh.client` were not guessed from documentation; they were matched field by field against several **already active**
+third-party plugins on this machine (`dshmarket`, `@linxin666/dsh-web-all`, `dsh-better-sidebar`):
 
 ```json
 "dsh": {
@@ -925,31 +919,31 @@ dsh 的凭据/同步机制走。桥只服务回环来源 —— 通过局域网�
 }
 ```
 
-`engines.dsh` 与 `@deepseek-ai/dsh-tools` 的 peer 范围都**不再声明**，只留 `engines.node`。
+Both `engines.dsh` and the peer range of `@deepseek-ai/dsh-tools` are **no longer declared**; only `engines.node` remains.
 
-历史上这里写过显式的预发布分支（`^0.1.0-rc.1 || ^0.1.1-0 || ^0.1.2-0 || ^0.1.5-0`），
-原因是 node-semver 的一条规则：**范围里不含预发布标签的比较符不会匹配预发布版本** ——
-所以裸 `"*"` 反而匹配不到 harness 的 `-rc.x` 构建，必须逐个 minor 补 `|| ^X.Y.Z-0` 分支。
-但这条路是死胡同：harness 每出一个新 minor 预发布（例如 `0.2.0-rc.1`）就要补一个分支，
-漏补就会被市场判成「与当前 DSH 不兼容」并弹出崩溃警告，而插件本身其实照常工作 ——
-这是纯声明侧的维护成本，不是真实的功能依赖。
+Historically, explicit pre-release branches were written here (`^0.1.0-rc.1 || ^0.1.1-0 || ^0.1.2-0 || ^0.1.5-0`),
+because of a node-semver rule: **comparators without a pre-release tag in the range do not match pre-release versions** —
+so bare `"*"` actually fails to match the harness's `-rc.x` builds, and `|| ^X.Y.Z-0` branches must be added per minor.
+But this path is a dead end: every time the harness releases a new minor pre-release (e.g. `0.2.0-rc.1`), a branch must be added;
+a missed addition makes the marketplace judge "incompatible with current DSH" and pop up a crash warning, while the plugin itself actually works as usual —
+this is pure declaration-side maintenance cost, not a real functional dependency.
 
-现在改为**不设版本闸门**：删掉 `engines.dsh`，`dsh-tools` 的 peer 范围回归 `"*"`。
-插件对 harness 的耦合实际很弱，全部走运行时能力探测 —— `lib/tools.js` 对 `dsh-tools`
-是 `await import()` 且失败只告警跳过工具注册，客户端依赖走 `dsh.client.inject` 由宿主解析，
-没有任何一处硬编码 harness 版本号。因此版本上限交给宿主/市场自己去管，插件不再替它断言。
-官方 `@deepseek-ai/*` 仍一律写进 `peerDependencies`（而不是 `dependencies`），并全部标
-`optional`。
+Now changed to **no version gate**: deleted `engines.dsh`, `dsh-tools`' peer range reverts to `"*"`.
+The plugin's coupling to the harness is actually weak, all going through runtime capability probing — `lib/tools.js` uses
+`await import()` on `dsh-tools` and only warns and skips tool registration on failure; client dependencies go through `dsh.client.inject` resolved by the host;
+nowhere is a harness version number hardcoded. Therefore the version upper limit is left for the host/marketplace to manage itself; the plugin no longer asserts on its behalf.
+Official `@deepseek-ai/*` are still all written into `peerDependencies` (not `dependencies`), and all marked
+`optional`.
 
-`cordis.patch.yml` 里的 loader entry id 带作者前缀（`dzqjoker-local-model`），不用裸的
-`local-model`：cordis 拒绝加载含重复 entry id 的插件树，而插件市场一旦发现新装插件的 id
-与已加载的相撞，会直接把该插件卸载（否则下次启动整个 profile 都起不来）。
+The loader entry id in `cordis.patch.yml` has an author prefix (`dzqjoker-local-model`), not bare
+`local-model`: cordis refuses to load plugin trees with duplicate entry ids, and the plugin marketplace, once it finds a newly installed plugin's id
+colliding with a loaded one, directly unloads that plugin (otherwise the whole profile would fail to start on next startup).
 
-`exports` 只声明了 `.` / `./client` / `./cordis.patch.yml` / `./package.json` 四个入口，
-与上述包的风格保持一致。
+`exports` only declares four entries: `.` / `./client` / `./cordis.patch.yml` / `./package.json`,
+consistent with the style of the above packages.
 
-`repository` 字段必须指回本仓库 —— 插件市场用它把 npm 包与列表条目关联起来。
-本包不再有 `private` 字段：它是要被公开安装的插件。
+The `repository` field must point back to this repo — the plugin marketplace uses it to associate the npm package with the list entry.
+This package no longer has a `private` field: it is a plugin to be publicly installed.
 
 ## License
 

@@ -15,7 +15,7 @@ import { LocalModelSection } from './section.jsx'
 const NS = 'local-model'
 
 const zh = {
-  title: '本地模型',
+  title: 'Local model',
 }
 
 const en = {
@@ -46,7 +46,7 @@ export function apply(ctx) {
             try {
               return ctx.locale.bind(NS)('title')
             } catch {
-              return '本地模型'
+              return 'Local model'
             }
           },
           locale: NS,

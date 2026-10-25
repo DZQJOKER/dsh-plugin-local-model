@@ -1,31 +1,31 @@
 # dsh bundle patch: inserts this plugin into a profile's layer stack.
 #
-# 这个文件由 package.json 的 dsh.bundle.patch 指向，是「本包贡献的配置层」。
-# profile 的 dsh.profile.bundles 里列出本包时，这一层就会被应用，不需要手动 --patch。
+# This file is referenced by dsh.bundle.patch in package.json and is "the config layer this package contributes".
+# When the profile's dsh.profile.bundles lists this package, this layer is applied — no manual --patch needed.
 #
-# 注意：
-#   • name 必须是**包名**，不能用相对路径 —— 包装进 profile 的 node_modules 之后，
-#     相对路径无法解析。本地临时调试才用绝对路径 + --patch。
-#   • 只需要写想覆盖的字段，其余由插件的 schema 默认值补全。
-#   • 用户级覆盖（设置页 / settings.yaml）优先级高于这里。
-#   • id 必须全局唯一：cordis 拒绝加载含重复 entry id 的插件树，而插件市场
-#     发现新装插件的 id 与已加载的相撞时会直接把该插件卸载（否则下次启动起不来）。
-#     所以这里带上作者前缀，不用裸的 'local-model'。
+# Notes:
+#   • name must be the **package name**, not a relative path — once the package is installed into the profile's node_modules,
+#     relative paths cannot be resolved. Use an absolute path + --patch only for local debugging.
+#   • Only write the fields you want to override; everything else is filled in by the plugin's schema defaults.
+#   • User-level overrides (settings page / settings.yaml) take precedence over this file.
+#   • id must be globally unique: cordis refuses to load a plugin tree with duplicate entry ids, and the plugin market
+#     will uninstall a newly installed plugin whose id collides with an already loaded one (otherwise the profile won't start next time).
+#     That's why the author prefix is used here instead of the bare 'local-model'.
 
 - insert:
     - id: dzqjoker-local-model
       name: 'dsh-plugin-local-model'
       config:
-        # 选中的模型（模型目录下的相对路径）。留空 = 尚未选择，
-        # 此时首个对话会给出「请先去设置里选模型」的可操作提示。
+        # Selected model (relative path under the models directory). Empty = not selected yet;
+        # the first conversation then shows an actionable hint to pick a model in settings.
         selectedModel: ''
 
-        # 空闲卸载：连续多少分钟无对话交互即卸载模型、释放显存。0 = 关闭。
+        # Idle unload: after this many minutes without conversation activity the model is unloaded and VRAM freed. 0 = disabled.
         idleUnloadMinutes: 5
 
-        # 本地服务端口，dsh 侧的 llm 路由要指向它。
+        # Local service port; the dsh-side llm route must point at it.
         port: 18080
 
-        # 上下文长度。dsh 侧路由声明的上下文窗口会跟着这一项走（不再单独配置）。
+        # Context size. The context window declared by the dsh-side route follows this value (no longer configured separately).
         ctxSize: 8192
 

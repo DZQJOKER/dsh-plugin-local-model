@@ -135,7 +135,7 @@ export function LocalModelSection() {
 
   const save = () => {
     if (invalid.length > 0) {
-      setError(`有字段格式不对，请先修正：${invalid.join('、')}`)
+      setError(`Some fields have an invalid format, please fix them first: ${invalid.join(', ')}`)
       return
     }
     void act(
@@ -144,7 +144,7 @@ export function LocalModelSection() {
         const next = await saveConfig(draft, unset)
         setDraft({})
         setUnset([])
-        setNotice('设置已保存；模型已按新参数卸载，下次对话会自动重新加载')
+        setNotice('Settings saved; the model was unloaded with the new parameters and will be reloaded automatically on the next conversation')
         return next
       },
       null,
@@ -154,8 +154,8 @@ export function LocalModelSection() {
   if (!state) {
     return (
       <div style={S.wrap}>
-        <h2 style={S.h2}>本地模型</h2>
-        <p style={S.lede}>{error ? '无法连接到本地模型插件。' : '正在读取配置…'}</p>
+        <h2 style={S.h2}>Local model</h2>
+        <p style={S.lede}>{error ? 'Unable to connect to the local model plugin.' : 'Loading settings…'}</p>
         {error ? <div style={{ ...S.banner, ...S.error }}>{error}</div> : null}
       </div>
     )
@@ -167,16 +167,16 @@ export function LocalModelSection() {
 
   return (
     <div style={S.wrap}>
-      <h2 style={S.h2}>本地模型</h2>
+      <h2 style={S.h2}>Local model</h2>
       <p style={S.lede}>
-        用本机的 llama.cpp 跑模型：选定模型后，第一条对话会自动加载，连续 {config.idleUnloadMinutes ?? 5}{' '}
-        分钟无交互会自动卸载并释放显存。
+        Runs models with the local llama.cpp: once you pick a model, the first conversation loads it automatically, and after {config.idleUnloadMinutes ?? 5}{' '}
+        minutes without interaction it is unloaded automatically to free VRAM.
       </p>
 
       {error ? <div style={{ ...S.banner, ...S.error }}>{error}</div> : null}
       {notice ? <div style={{ ...S.banner, ...S.notice }}>{notice}</div> : null}
       {runtimeState === 'disabled' ? (
-        <div style={{ ...S.banner, ...S.hint }}>总开关已关闭：不会监听端口，也不会拉起任何进程。</div>
+        <div style={{ ...S.banner, ...S.hint }}>The master switch is off: no port is listened on and no process is started.</div>
       ) : null}
       {/*
         视觉投影被 MTP 顶掉时说清楚原因。用户是「本来开了视觉投影、又开了 MTP」才走到这里，
@@ -218,48 +218,48 @@ export function LocalModelSection() {
           </div>
         <div style={S.metaGrid}>
           <div>
-            <span style={S.metaLabel}>当前模型：</span>
-            {state.runtime.model ? `${state.runtime.model.displayName}${state.runtime.model.quant ? ` [${state.runtime.model.quant}]` : ''}` : '未选择'}
+            <span style={S.metaLabel}>Current model: </span>
+            {state.runtime.model ? `${state.runtime.model.displayName}${state.runtime.model.quant ? ` [${state.runtime.model.quant}]` : ''}` : 'Not selected'}
           </div>
           <div>
-            <span style={S.metaLabel}>进程：</span>
-            {state.runtime.pid ? `pid ${state.runtime.pid}` : '未运行'}
+            <span style={S.metaLabel}>Process: </span>
+            {state.runtime.pid ? `pid ${state.runtime.pid}` : 'Not running'}
           </div>
           <div>
-            <span style={S.metaLabel}>入口：</span>
+            <span style={S.metaLabel}>Endpoint: </span>
             <span style={S.mono}>{state.runtime.endpoint}</span>
           </div>
           <div>
-            <span style={S.metaLabel}>模型总数：</span>
+            <span style={S.metaLabel}>Total models: </span>
             {state.runtime.modelsFound}
           </div>
           <div>
-            <span style={S.metaLabel}>推理档位：</span>
+            <span style={S.metaLabel}>Reasoning effort: </span>
             {Array.isArray(state.runtime.reasoningEfforts) && state.runtime.reasoningEfforts.length > 0 ? (
               /* 模型模板支持哪几档，决定对话框里选的档位最后会变成什么 —— 一眼可见最省事。 */
-              <span style={S.mono}>{state.runtime.reasoningEfforts.join(' / ')}（按模板重映射）</span>
+              <span style={S.mono}>{state.runtime.reasoningEfforts.join(' / ')} (remapped by template)</span>
             ) : (
-              <span style={{ color: '#9a6209' }}>未解析出，本次不下发档位（只按开关控制思考与否）</span>
+              <span style={{ color: '#9a6209' }}>Not resolved; no effort is sent this run (thinking is controlled by the switch only)</span>
             )}
           </div>
           <div>
-            <span style={S.metaLabel}>多 Token 预测：</span>
-            {state.runtime.mtp ? '已开启（--spec-type draft-mtp）' : '已关闭'}
+            <span style={S.metaLabel}>Multi-token prediction: </span>
+            {state.runtime.mtp ? 'Enabled (--spec-type draft-mtp)' : 'Disabled'}
           </div>
           <div>
-            <span style={S.metaLabel}>视觉投影：</span>
+            <span style={S.metaLabel}>Vision projector: </span>
             {state.runtime.visionProjector ? (
               <span style={S.mono}>{state.runtime.visionProjector}</span>
             ) : state.runtime.visionDisabledByMtp ? (
               /* 开着 MTP 时这里恒为空，别让它显示成「纯文本」—— 那是另一回事。 */
-              <span style={{ color: '#9a6209' }}>已配置，但本次被 MTP 顶掉</span>
+              <span style={{ color: '#9a6209' }}>Configured, but overridden by MTP this run</span>
             ) : (
-              '未启用（纯文本）'
+              'Not enabled (text only)'
             )}
           </div>
           {isReady && state.runtime.unloadAt ? (
             <div>
-              <span style={S.metaLabel}>自动卸载：</span>
+              <span style={S.metaLabel}>Auto-unload: </span>
               {new Date(state.runtime.unloadAt).toLocaleTimeString()}
             </div>
           ) : null}
@@ -273,28 +273,28 @@ export function LocalModelSection() {
             type="button"
             style={{ ...S.button, ...(busyAny ? S.buttonDisabled : {}) }}
             disabled={busyAny}
-            onClick={() => void act('scan', () => runAction('scan'), '已重新扫描模型目录')}
+            onClick={() => void act('scan', () => runAction('scan'), 'Model directory rescanned')}
           >
-            {busy === 'scan' ? '扫描中…' : '重新扫描'}
+            {busy === 'scan' ? 'Scanning…' : 'Rescan'}
           </button>
           <button
             type="button"
             style={{ ...S.button, ...(busyAny || isReady ? S.buttonDisabled : {}) }}
             disabled={busyAny || isReady}
-            onClick={() => void act('start', () => runAction('start'), '模型已加载')}
+            onClick={() => void act('start', () => runAction('start'), 'Model loaded')}
           >
-            {busy === 'start' ? '加载中…' : '立即加载'}
+            {busy === 'start' ? 'Loading…' : 'Load now'}
           </button>
           <button
             type="button"
             style={{ ...S.button, ...(busyAny || !isReady ? S.buttonDisabled : {}) }}
             disabled={busyAny || !isReady}
-            onClick={() => void act('stop', () => runAction('stop'), '已卸载，显存已释放')}
+            onClick={() => void act('stop', () => runAction('stop'), 'Unloaded, VRAM freed')}
           >
-            {busy === 'stop' ? '卸载中…' : '卸载'}
+            {busy === 'stop' ? 'Unloading…' : 'Unload'}
           </button>
           <button type="button" style={S.button} disabled={busyAny} onClick={() => void load({ silent: true })}>
-            刷新状态
+            Refresh status
           </button>
         </div>
       </div>
@@ -322,21 +322,21 @@ export function LocalModelSection() {
       ))}
 
       <div style={S.card}>
-        <h3 style={S.groupTitle}>目录约定</h3>
+        <h3 style={S.groupTitle}>Directories</h3>
         <p style={S.groupHint}>
-          自己去 llama.cpp 的 release 页面下载 llama-server，把 GGUF 模型放进模型目录。放好后回到这里点「重新扫描」。
+          Download llama-server from the llama.cpp releases page and put GGUF models into the model directory. Once done, come back here and click "Rescan".
         </p>
         <div style={{ ...S.metaGrid, marginTop: 0 }}>
           <div>
-            <span style={S.metaLabel}>模型目录：</span>
+            <span style={S.metaLabel}>Model directory: </span>
             <span style={S.mono}>{state.form.paths.modelsDir}</span>
           </div>
           <div>
-            <span style={S.metaLabel}>运行时目录：</span>
+            <span style={S.metaLabel}>Runtime directory: </span>
             <span style={S.mono}>{state.form.paths.runtimeDir}</span>
           </div>
           <div>
-            <span style={S.metaLabel}>用户配置：</span>
+            <span style={S.metaLabel}>User config: </span>
             <span style={S.mono}>{state.form.paths.configFile}</span>
           </div>
         </div>
@@ -349,7 +349,7 @@ export function LocalModelSection() {
           disabled={busyAny || dirtyCount === 0 || invalid.length > 0}
           onClick={save}
         >
-          {busy === 'save' ? '保存中…' : '保存'}
+          {busy === 'save' ? 'Saving…' : 'Save'}
         </button>
         <button
           type="button"
@@ -357,21 +357,21 @@ export function LocalModelSection() {
           disabled={dirtyCount === 0}
           onClick={discard}
         >
-          放弃修改
+          Discard changes
         </button>
         <button
           type="button"
           style={{ ...S.button, ...(busyAny ? S.buttonDisabled : {}) }}
           disabled={busyAny}
           onClick={() => {
-            if (window.confirm('恢复为部署默认值？这会清空你在这个页面上做过的所有修改。')) {
-              void act('reset', () => resetConfig(), '已恢复默认值')
+            if (window.confirm('Restore the deployment defaults? This clears all changes you made on this page.')) {
+              void act('reset', () => resetConfig(), 'Defaults restored')
             }
           }}
         >
-          {busy === 'reset' ? '恢复中…' : '恢复默认'}
+          {busy === 'reset' ? 'Restoring…' : 'Restore defaults'}
         </button>
-        <span style={S.dirty}>{dirtyCount > 0 ? `有 ${dirtyCount} 项未保存` : '没有未保存的修改'}</span>
+        <span style={S.dirty}>{dirtyCount > 0 ? `${dirtyCount} unsaved change${dirtyCount === 1 ? '' : 's'}` : 'No unsaved changes'}</span>
       </div>
     </div>
   )
@@ -397,9 +397,9 @@ function LaunchPanel({ launch, loadedAt }) {
   if (lines.length === 0) {
     return (
       <div style={S.card}>
-        <p style={S.subTitle}>本次启动参数</p>
+        <p style={S.subTitle}>Launch parameters</p>
         <p style={S.groupHint}>
-          模型尚未加载。加载完成后，这里会列出本次**真正下发给 llama-server** 的全部参数。
+          The model is not loaded yet. Once loading finishes, this lists **all parameters actually sent to llama-server** for this run.
         </p>
       </div>
     )
@@ -420,7 +420,7 @@ function LaunchPanel({ launch, loadedAt }) {
   const copy = () => {
     const text = launch.commandLine ?? lines.join('\n')
     const done = (ok) => {
-      setCopied(ok ? '已复制' : '复制失败')
+      setCopied(ok ? 'Copied' : 'Copy failed')
       setTimeout(() => setCopied(''), 1500)
     }
     try {
@@ -436,12 +436,12 @@ function LaunchPanel({ launch, loadedAt }) {
     <div style={S.card}>
       <div style={S.panelHead}>
         <p style={{ ...S.subTitle, margin: 0 }}>
-          本次启动参数{when ? ` · ${when}` : ''}
-          <span style={{ ...S.factNote, marginLeft: 8 }}>（服务器实际收到的全部参数）</span>
+          Launch parameters{when ? ` · ${when}` : ''}
+          <span style={{ ...S.factNote, marginLeft: 8 }}>(all parameters the server actually received)</span>
         </p>
         <span style={S.panelHeadSpacer} />
         <button style={S.button} onClick={copy}>
-          {copied || '复制命令行'}
+          {copied || 'Copy command line'}
         </button>
       </div>
 
@@ -475,7 +475,7 @@ function LaunchPanel({ launch, loadedAt }) {
 
       {unrecognized.length > 0 ? (
         <div style={{ ...S.banner, ...S.warn, marginTop: 12, marginBottom: 0 }}>
-          这几个选项不在识别表里（可能来自「附加参数」）：{unrecognized.join('、')}
+          These options are not recognized (they may come from "Extra arguments"): {unrecognized.join(', ')}
         </div>
       ) : null}
     </div>
@@ -496,20 +496,20 @@ function Field({ field, value, models, visionFiles, overridden, invalid, mtp, on
       return (
         <>
           <select style={S.select} value={value ?? ''} onChange={(e) => onChange(e.target.value)}>
-            <option value="">（未选择）</option>
+            <option value="">(Not selected)</option>
             {models.map((m) => (
               <option key={m.id} value={m.id} disabled={!m.complete}>
                 {m.displayName}
                 {m.quant ? ` · ${m.quant}` : ''}
                 {m.params ? ` · ${m.params}` : ''} · {m.sizeText}
-                {m.complete ? '' : '（分片不完整）'}
-                {m.hasVisionProjector ? ' · 含视觉投影' : ''}
+                {m.complete ? '' : '(incomplete shards)'}
+                {m.hasVisionProjector ? ' · with vision projector' : ''}
               </option>
             ))}
           </select>
           {models.length === 0 ? (
             <div style={S.modelMeta}>
-              模型目录里还没有 .gguf 文件。把模型放进去后点上面的「重新扫描」。
+              No .gguf files in the model directory yet. Add models and click "Rescan" above.
             </div>
           ) : null}
         </>
@@ -527,36 +527,36 @@ function Field({ field, value, models, visionFiles, overridden, invalid, mtp, on
             value={selected}
             onChange={(e) => onChange(e.target.value)}
           >
-            <option value="">（自动：同目录能唯一确定归属时自动关联）</option>
+            <option value="">(Auto: links automatically when a file in the same directory can be uniquely matched)</option>
             {visionFiles.map((f) => (
               <option key={f.id} value={f.id}>
                 {f.id} · {f.sizeText}
               </option>
             ))}
             {/* 手改配置写了个绝对路径、或文件已被移走时，也要把当前值显示出来，别让下拉框看起来「没选」。 */}
-            {missing ? <option value={selected}>{selected}（不在扫描结果里）</option> : null}
+            {missing ? <option value={selected}>{selected} (not in scan results)</option> : null}
           </select>
           {/* 被 MTP 顶掉时，下面那些「自动 / 文件不存在」的提示全是噪音，一概不显示。 */}
           {visionLockedByMtp ? (
             <div style={{ ...S.modelMeta, color: '#9a6209', opacity: 1 }}>
-              ⚠ 已开启「多 Token 预测（MTP）」：MTP 与图像输入不能共存，本次加载不会下发 --mmproj。
-              这里选的文件不会被清空，关掉 MTP 即恢复生效；需要看图请先关掉 MTP。
+              ⚠ "Multi-token prediction (MTP)" is enabled: MTP and image input cannot coexist, so --mmproj is not sent for this load.
+              The file selected here is not cleared; it takes effect again once MTP is turned off. To use images, turn MTP off first.
             </div>
           ) : null}
           {!visionLockedByMtp && visionFiles.length === 0 ? (
             <div style={S.modelMeta}>
-              模型目录里还没有 mmproj-*.gguf。需要图像输入时把视觉投影文件放进模型目录，再点上面的「重新扫描」；
-              纯文本模型保持「自动」即可。
+              No mmproj-*.gguf files in the model directory yet. If you need image input, put the vision projector file into the model directory and click "Rescan" above;
+              text-only models can stay on "Auto".
             </div>
           ) : null}
           {!visionLockedByMtp && missing ? (
             <div style={{ ...S.modelMeta, color: '#b02525', opacity: 1 }}>
-              ⚠ 选中的文件已不在模型目录里（或无权限读取）。加载时会被忽略或导致 --mmproj 报错，请重新选择。
+              ⚠ The selected file is no longer in the model directory (or cannot be read). It will be ignored on load or cause a --mmproj error; please select again.
             </div>
           ) : null}
           {!visionLockedByMtp && !missing && selected === '' && visionFiles.length > 0 ? (
             <div style={S.modelMeta}>
-              当前是「自动」：只有与模型同目录、且能唯一确定归属的 mmproj 才会随模型一起加载。
+              Currently "Auto": only an mmproj in the same directory as the model, with unambiguous ownership, is loaded together with the model.
             </div>
           ) : null}
         </>
@@ -568,7 +568,7 @@ function Field({ field, value, models, visionFiles, overridden, invalid, mtp, on
         return (
           <div style={S.checkboxRow}>
             <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} />
-            <span style={{ fontSize: 12, opacity: 0.7 }}>{value === true ? '开启' : '关闭'}</span>
+            <span style={{ fontSize: 12, opacity: 0.7 }}>{value === true ? 'On' : 'Off'}</span>
           </div>
         )
       case 'number':
@@ -609,19 +609,19 @@ function Field({ field, value, models, visionFiles, overridden, invalid, mtp, on
     <div style={S.field}>
       <div style={S.label}>
         <span>{field.label}</span>
-        {overridden ? <span style={S.overridden}>已覆盖</span> : null}
+        {overridden ? <span style={S.overridden}>Overridden</span> : null}
       </div>
       <div>{control()}</div>
       <button
         type="button"
-        title="恢复为默认值"
+        title="Restore to default"
         style={{ ...S.button, fontSize: 11, lineHeight: '22px', padding: '0 8px' }}
         onClick={onRevert}
       >
-        默认
+        Default
       </button>
       <div style={{ ...S.desc, ...(invalid ? { color: '#b02525', opacity: 1 } : {}) }}>
-        {invalid ? 'JSON 格式不对，保存会被阻止：' : ''}
+        {invalid ? 'Invalid JSON format, saving is blocked: ' : ''}
         {field.description}
       </div>
     </div>

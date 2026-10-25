@@ -39,13 +39,13 @@ export function PresetBar({ presets, dirtyCount, invalid, busy, busyAny, snapsho
         setLastId(null)
         return next
       },
-      `已保存预设「${label}」`,
+      `Preset "${label}" saved`,
     )
   }
 
   const doApply = (preset) => {
     if (busyAny) return
-    if (dirtyCount > 0 && !window.confirm(`应用预设会丢弃当前未保存的 ${dirtyCount} 项修改，继续？`)) return
+    if (dirtyCount > 0 && !window.confirm(`Applying the preset discards your current ${dirtyCount} unsaved change${dirtyCount === 1 ? '' : 's'}. Continue?`)) return
     void act(
       'preset:apply',
       async () => {
@@ -55,7 +55,7 @@ export function PresetBar({ presets, dirtyCount, invalid, busy, busyAny, snapsho
         setLastId(preset.id)
         return next
       },
-      `已应用预设「${preset.name}」`,
+      `Preset "${preset.name}" applied`,
     )
   }
 
@@ -64,22 +64,22 @@ export function PresetBar({ presets, dirtyCount, invalid, busy, busyAny, snapsho
     void act(
       'preset:overwrite',
       () => overwritePreset(preset.id, snapshot()),
-      `已用当前参数更新预设「${preset.name}」`,
+      `Preset "${preset.name}" updated with the current parameters`,
     )
   }
 
   const doRename = (preset) => {
     if (busyAny) return
-    const input = window.prompt('预设名称', preset.name)
+    const input = window.prompt('Preset name', preset.name)
     if (input === null) return
     const next = input.trim()
     if (next === '' || next === preset.name) return
-    void act('preset:rename', () => renamePreset(preset.id, next), `预设已重命名为「${next}」`)
+    void act('preset:rename', () => renamePreset(preset.id, next), `Preset renamed to "${next}"`)
   }
 
   const doRemove = (preset) => {
     if (busyAny) return
-    const ok = window.confirm(`删除预设「${preset.name}」？\n\n只删掉这组参数，当前生效的设置不受影响。`)
+    const ok = window.confirm(`Delete preset "${preset.name}"?\n\nOnly this parameter set is removed; the currently active settings are not affected.`)
     if (!ok) return
     void act(
       'preset:delete',
@@ -88,23 +88,23 @@ export function PresetBar({ presets, dirtyCount, invalid, busy, busyAny, snapsho
         if (lastId === preset.id) setLastId(null)
         return next
       },
-      `已删除预设「${preset.name}」`,
+      `Preset "${preset.name}" deleted`,
     )
   }
 
   return (
     <div style={{ ...S.card, ...S.cardPinned }}>
-      <h3 style={S.groupTitle}>参数预设</h3>
+      <h3 style={S.groupTitle}>Parameter presets</h3>
       <p style={S.groupHint}>
-        把当前这一整套加载与推理参数存成带名字的预设，之后一键切换 —— 点预设名即应用（模型会按新参数重新加载）。
-        端口、路径、密钥等 {excludedCount} 项「属于这台机器」的设置不进预设，切换时保持原样。
+        Save the current full set of loading and inference parameters as a named preset and switch with one click — clicking a preset name applies it (the model is reloaded with the new parameters).
+        Machine-specific settings such as ports, paths, and keys ({excludedCount} in total) are not part of presets and stay unchanged when switching.
       </p>
 
       {presets?.warning ? <div style={{ ...S.banner, ...S.warn, marginBottom: 10 }}>{presets.warning}</div> : null}
 
       {items.length === 0 ? (
         <p style={S.modelMeta}>
-          还没有预设。把参数调到满意之后，在下面输入一个名字点「保存为预设」；以后随时能一键切回来。
+          No presets yet. Once you have tuned the parameters to your liking, enter a name below and click "Save as preset"; you can switch back with one click anytime.
         </p>
       ) : (
         <div style={S.chipRow}>
@@ -117,18 +117,18 @@ export function PresetBar({ presets, dirtyCount, invalid, busy, busyAny, snapsho
                   style={{ ...S.chipLabel, ...(busyAny ? S.buttonDisabled : {}) }}
                   disabled={busyAny}
                   title={
-                    `应用「${preset.name}」：共 ${preset.fieldCount} 项参数` +
-                    (preset.changed > 0 ? `，与当前有 ${preset.changed} 项不同` : '（与当前完全一致）')
+                    `Apply "${preset.name}": ${preset.fieldCount} parameters in total` +
+                    (preset.changed > 0 ? `, ${preset.changed} differ from current` : ' (identical to current)')
                   }
                   onClick={() => doApply(preset)}
                 >
                   {preset.name}
-                  <span style={S.chipMeta}>{preset.changed > 0 ? `${preset.changed} 项不同` : '当前生效'}</span>
+                  <span style={S.chipMeta}>{preset.changed > 0 ? `${preset.changed} differ` : 'active'}</span>
                 </button>
-                <button type="button" style={S.chipIcon} disabled={busyAny} title="重命名" onClick={() => doRename(preset)}>
+                <button type="button" style={S.chipIcon} disabled={busyAny} title="Rename" onClick={() => doRename(preset)}>
                   ✎
                 </button>
-                <button type="button" style={S.chipIcon} disabled={busyAny} title="删除这个预设" onClick={() => doRemove(preset)}>
+                <button type="button" style={S.chipIcon} disabled={busyAny} title="Delete this preset" onClick={() => doRemove(preset)}>
                   ×
                 </button>
               </span>
@@ -141,7 +141,7 @@ export function PresetBar({ presets, dirtyCount, invalid, busy, busyAny, snapsho
         <input
           type="text"
           style={{ ...S.input, width: 'auto', flex: '1 1 220px' }}
-          placeholder="预设名称，例如：看图 / 长文本 / 省显存"
+          placeholder="Preset name, e.g.: vision / long context / low VRAM"
           value={name}
           maxLength={40}
           onChange={(e) => setName(e.target.value)}
@@ -155,34 +155,34 @@ export function PresetBar({ presets, dirtyCount, invalid, busy, busyAny, snapsho
           disabled={!canSave}
           onClick={doSave}
         >
-          {busy === 'preset:save' ? '保存中…' : '保存为预设'}
+          {busy === 'preset:save' ? 'Saving…' : 'Save as preset'}
         </button>
         {lastPreset ? (
           <button
             type="button"
             style={{ ...S.button, ...(busyAny ? S.buttonDisabled : {}) }}
             disabled={busyAny}
-            title="把界面上当前这套参数写回这个预设（名称不变）"
+            title="Write the current on-screen parameters back to this preset (name unchanged)"
             onClick={() => doOverwrite(lastPreset)}
           >
-            用当前参数更新「{lastPreset.name}」
+            Update "{lastPreset.name}" with current parameters
           </button>
         ) : null}
       </div>
 
       <div style={S.modelMeta}>
-        保存的是界面上当前这套参数
-        {dirtyCount > 0 ? `（含 ${dirtyCount} 项还没保存的修改，一并存进预设）` : '（与已保存的设置一致）'}；
-        没填的数字项按「不设置」处理，不会写成 0。
+        What is saved is the current on-screen parameter set
+        {dirtyCount > 0 ? ` (including ${dirtyCount} unsaved change${dirtyCount === 1 ? '' : 's'}, stored in the preset as well)` : ' (identical to the saved settings)'};
+        empty number fields are treated as "not set" and never written as 0.
       </div>
       {presets?.file ? (
         <div style={S.modelMeta}>
-          预设文件：<span style={S.mono}>{presets.file}</span>
+          Preset file: <span style={S.mono}>{presets.file}</span>
         </div>
       ) : null}
       {invalid.length > 0 ? (
         <div style={{ ...S.banner, ...S.error, marginTop: 10, marginBottom: 0 }}>
-          有字段格式不对（{invalid.join('、')}），先修正再保存预设。
+          Some fields have an invalid format ({invalid.join(', ')}); fix them before saving the preset.
         </div>
       ) : null}
     </div>

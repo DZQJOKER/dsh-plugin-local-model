@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-local-model",
   "version": "0.7.1",
-  "description": "DeepSeek Harness 本地模型插件：设置里独立的「本地模型」页，首条对话自动拉起 llama.cpp，空闲 5 分钟自动卸载释放资源。",
+  "description": "DeepSeek Harness local model plugin: a dedicated 'Local model' settings page that auto-starts llama.cpp on the first conversation and auto-unloads after 5 idle minutes to free VRAM.",
   "type": "module",
   "license": "MIT",
   "repository": {

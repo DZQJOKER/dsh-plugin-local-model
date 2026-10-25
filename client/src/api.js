@@ -12,7 +12,7 @@ async function request(path, init) {
     data = null
   }
   if (!res.ok || (data && data.ok === false)) {
-    const message = (data && data.error) || `请求失败（HTTP ${res.status}）`
+    const message = (data && data.error) || `Request failed (HTTP ${res.status})`
     throw new Error(message)
   }
   return data

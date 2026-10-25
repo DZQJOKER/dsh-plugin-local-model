@@ -23,18 +23,18 @@ window.__ModuleLoader__.load({
 		  return to;
 		};
 		var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-
+		
 		// client/src/index.jsx
-		var src_exports = {};
-		__export(src_exports, {
+		var index_exports = {};
+		__export(index_exports, {
 		  apply: () => apply,
 		  inject: () => inject
 		});
-		module.exports = __toCommonJS(src_exports);
-
+		module.exports = __toCommonJS(index_exports);
+		
 		// client/src/section.jsx
 		var import_react2 = require("react");
-
+		
 		// client/src/api.js
 		var BASE = "/api/local-model";
 		async function request(path, init) {
@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
 		    data = null;
 		  }
 		  if (!res.ok || data && data.ok === false) {
-		    const message = data && data.error || `请求失败（HTTP ${res.status}）`;
+		    const message = data && data.error || `Request failed (HTTP ${res.status})`;
 		    throw new Error(message);
 		  }
 		  return data;
@@ -66,7 +66,7 @@ window.__ModuleLoader__.load({
 		var overwritePreset = (id, values) => request("/presets/overwrite", JSON_POST({ id, values }));
 		var renamePreset = (id, name) => request("/presets/rename", JSON_POST({ id, name }));
 		var deletePreset = (id) => request("/presets/delete", JSON_POST({ id }));
-
+		
 		// client/src/presetSnapshot.js
 		function fieldKindMap(groups) {
 		  const map = {};
@@ -85,10 +85,10 @@ window.__ModuleLoader__.load({
 		  }
 		  return out;
 		}
-
+		
 		// client/src/presets.jsx
 		var import_react = require("react");
-
+		
 		// client/src/styles.js
 		var c = (name, fallback) => `var(${name}, ${fallback})`;
 		var SURFACE = c("--dsw-alias-bg-layer-2", "#fff");
@@ -460,7 +460,7 @@ window.__ModuleLoader__.load({
 		  idle: pair(c("--dsw-alias-label-secondary", "#61666b")),
 		  disabled: pair(c("--dsw-alias-label-secondary", "#61666b"))
 		};
-
+		
 		// client/src/presets.jsx
 		var import_jsx_runtime = require("react/jsx-runtime");
 		function PresetBar({ presets, dirtyCount, invalid, busy, busyAny, snapshot, resetDraft, act }) {
@@ -482,12 +482,12 @@ window.__ModuleLoader__.load({
 		        setLastId(null);
 		        return next;
 		      },
-		      `已保存预设「${label}」`
+		      `Preset "${label}" saved`
 		    );
 		  };
 		  const doApply = (preset) => {
 		    if (busyAny) return;
-		    if (dirtyCount > 0 && !window.confirm(`应用预设会丢弃当前未保存的 ${dirtyCount} 项修改，继续？`)) return;
+		    if (dirtyCount > 0 && !window.confirm(`Applying the preset discards your current ${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}. Continue?`)) return;
 		    void act(
 		      "preset:apply",
 		      async () => {
@@ -496,7 +496,7 @@ window.__ModuleLoader__.load({
 		        setLastId(preset.id);
 		        return next;
 		      },
-		      `已应用预设「${preset.name}」`
+		      `Preset "${preset.name}" applied`
 		    );
 		  };
 		  const doOverwrite = (preset) => {
@@ -504,22 +504,22 @@ window.__ModuleLoader__.load({
 		    void act(
 		      "preset:overwrite",
 		      () => overwritePreset(preset.id, snapshot()),
-		      `已用当前参数更新预设「${preset.name}」`
+		      `Preset "${preset.name}" updated with the current parameters`
 		    );
 		  };
 		  const doRename = (preset) => {
 		    if (busyAny) return;
-		    const input = window.prompt("预设名称", preset.name);
+		    const input = window.prompt("Preset name", preset.name);
 		    if (input === null) return;
 		    const next = input.trim();
 		    if (next === "" || next === preset.name) return;
-		    void act("preset:rename", () => renamePreset(preset.id, next), `预设已重命名为「${next}」`);
+		    void act("preset:rename", () => renamePreset(preset.id, next), `Preset renamed to "${next}"`);
 		  };
 		  const doRemove = (preset) => {
 		    if (busyAny) return;
-		    const ok = window.confirm(`删除预设「${preset.name}」？
-
-		只删掉这组参数，当前生效的设置不受影响。`);
+		    const ok = window.confirm(`Delete preset "${preset.name}"?
+		
+		Only this parameter set is removed; the currently active settings are not affected.`);
 		    if (!ok) return;
 		    void act(
 		      "preset:delete",
@@ -528,18 +528,18 @@ window.__ModuleLoader__.load({
 		        if (lastId === preset.id) setLastId(null);
 		        return next;
 		      },
-		      `已删除预设「${preset.name}」`
+		      `Preset "${preset.name}" deleted`
 		    );
 		  };
 		  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { ...S.card, ...S.cardPinned }, children: [
-		    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { style: S.groupTitle, children: "参数预设" }),
+		    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { style: S.groupTitle, children: "Parameter presets" }),
 		    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { style: S.groupHint, children: [
-		      "把当前这一整套加载与推理参数存成带名字的预设，之后一键切换 —— 点预设名即应用（模型会按新参数重新加载）。 端口、路径、密钥等 ",
+		      "Save the current full set of loading and inference parameters as a named preset and switch with one click \u2014 clicking a preset name applies it (the model is reloaded with the new parameters). Machine-specific settings such as ports, paths, and keys (",
 		      excludedCount,
-		      " 项「属于这台机器」的设置不进预设，切换时保持原样。"
+		      " in total) are not part of presets and stay unchanged when switching."
 		    ] }),
 		    presets?.warning ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { ...S.banner, ...S.warn, marginBottom: 10 }, children: presets.warning }) : null,
-		    items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { style: S.modelMeta, children: "还没有预设。把参数调到满意之后，在下面输入一个名字点「保存为预设」；以后随时能一键切回来。" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.chipRow, children: items.map((preset) => {
+		    items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { style: S.modelMeta, children: 'No presets yet. Once you have tuned the parameters to your liking, enter a name below and click "Save as preset"; you can switch back with one click anytime.' }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: S.chipRow, children: items.map((preset) => {
 		      const isActive = preset.id === activeId;
 		      return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { style: { ...S.chip, ...isActive ? S.chipActive : {} }, children: [
 		        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
@@ -548,16 +548,16 @@ window.__ModuleLoader__.load({
 		            type: "button",
 		            style: { ...S.chipLabel, ...busyAny ? S.buttonDisabled : {} },
 		            disabled: busyAny,
-		            title: `应用「${preset.name}」：共 ${preset.fieldCount} 项参数` + (preset.changed > 0 ? `，与当前有 ${preset.changed} 项不同` : "（与当前完全一致）"),
+		            title: `Apply "${preset.name}": ${preset.fieldCount} parameters in total` + (preset.changed > 0 ? `, ${preset.changed} differ from current` : " (identical to current)"),
 		            onClick: () => doApply(preset),
 		            children: [
 		              preset.name,
-		              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.chipMeta, children: preset.changed > 0 ? `${preset.changed} 项不同` : "当前生效" })
+		              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.chipMeta, children: preset.changed > 0 ? `${preset.changed} differ` : "active" })
 		            ]
 		          }
 		        ),
-		        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", style: S.chipIcon, disabled: busyAny, title: "重命名", onClick: () => doRename(preset), children: "✎" }),
-		        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", style: S.chipIcon, disabled: busyAny, title: "删除这个预设", onClick: () => doRemove(preset), children: "×" })
+		        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", style: S.chipIcon, disabled: busyAny, title: "Rename", onClick: () => doRename(preset), children: "\u270E" }),
+		        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", style: S.chipIcon, disabled: busyAny, title: "Delete this preset", onClick: () => doRemove(preset), children: "\xD7" })
 		      ] }, preset.id);
 		    }) }),
 		    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: S.presetRow, children: [
@@ -566,7 +566,7 @@ window.__ModuleLoader__.load({
 		        {
 		          type: "text",
 		          style: { ...S.input, width: "auto", flex: "1 1 220px" },
-		          placeholder: "预设名称，例如：看图 / 长文本 / 省显存",
+		          placeholder: "Preset name, e.g.: vision / long context / low VRAM",
 		          value: name,
 		          maxLength: 40,
 		          onChange: (e) => setName(e.target.value),
@@ -582,7 +582,7 @@ window.__ModuleLoader__.load({
 		          style: { ...S.buttonPrimary, ...canSave ? {} : S.buttonDisabled },
 		          disabled: !canSave,
 		          onClick: doSave,
-		          children: busy === "preset:save" ? "保存中…" : "保存为预设"
+		          children: busy === "preset:save" ? "Saving\u2026" : "Save as preset"
 		        }
 		      ),
 		      lastPreset ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
@@ -591,33 +591,33 @@ window.__ModuleLoader__.load({
 		          type: "button",
 		          style: { ...S.button, ...busyAny ? S.buttonDisabled : {} },
 		          disabled: busyAny,
-		          title: "把界面上当前这套参数写回这个预设（名称不变）",
+		          title: "Write the current on-screen parameters back to this preset (name unchanged)",
 		          onClick: () => doOverwrite(lastPreset),
 		          children: [
-		            "用当前参数更新「",
+		            'Update "',
 		            lastPreset.name,
-		            "」"
+		            '" with current parameters'
 		          ]
 		        }
 		      ) : null
 		    ] }),
 		    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: S.modelMeta, children: [
-		      "保存的是界面上当前这套参数",
-		      dirtyCount > 0 ? `（含 ${dirtyCount} 项还没保存的修改，一并存进预设）` : "（与已保存的设置一致）",
-		      "； 没填的数字项按「不设置」处理，不会写成 0。"
+		      "What is saved is the current on-screen parameter set",
+		      dirtyCount > 0 ? ` (including ${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}, stored in the preset as well)` : " (identical to the saved settings)",
+		      '; empty number fields are treated as "not set" and never written as 0.'
 		    ] }),
 		    presets?.file ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: S.modelMeta, children: [
-		      "预设文件：",
+		      "Preset file: ",
 		      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: S.mono, children: presets.file })
 		    ] }) : null,
 		    invalid.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { ...S.banner, ...S.error, marginTop: 10, marginBottom: 0 }, children: [
-		      "有字段格式不对（",
-		      invalid.join("、"),
-		      "），先修正再保存预设。"
+		      "Some fields have an invalid format (",
+		      invalid.join(", "),
+		      "); fix them before saving the preset."
 		    ] }) : null
 		  ] });
 		}
-
+		
 		// client/src/section.jsx
 		var import_jsx_runtime2 = require("react/jsx-runtime");
 		var POLL_MS = 4e3;
@@ -719,7 +719,7 @@ window.__ModuleLoader__.load({
 		  };
 		  const save = () => {
 		    if (invalid.length > 0) {
-		      setError(`有字段格式不对，请先修正：${invalid.join("、")}`);
+		      setError(`Some fields have an invalid format, please fix them first: ${invalid.join(", ")}`);
 		      return;
 		    }
 		    void act(
@@ -728,7 +728,7 @@ window.__ModuleLoader__.load({
 		        const next = await saveConfig(draft, unset);
 		        setDraft({});
 		        setUnset([]);
-		        setNotice("设置已保存；模型已按新参数卸载，下次对话会自动重新加载");
+		        setNotice("Settings saved; the model was unloaded with the new parameters and will be reloaded automatically on the next conversation");
 		        return next;
 		      },
 		      null
@@ -736,8 +736,8 @@ window.__ModuleLoader__.load({
 		  };
 		  if (!state) {
 		    return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.wrap, children: [
-		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h2", { style: S.h2, children: "本地模型" }),
-		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.lede, children: error ? "无法连接到本地模型插件。" : "正在读取配置…" }),
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h2", { style: S.h2, children: "Local model" }),
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.lede, children: error ? "Unable to connect to the local model plugin." : "Loading settings\u2026" }),
 		      error ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.error }, children: error }) : null
 		    ] });
 		  }
@@ -745,16 +745,16 @@ window.__ModuleLoader__.load({
 		  const isReady = runtimeState === "ready";
 		  const busyAny = busy !== "";
 		  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.wrap, children: [
-		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h2", { style: S.h2, children: "本地模型" }),
+		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h2", { style: S.h2, children: "Local model" }),
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("p", { style: S.lede, children: [
-		      "用本机的 llama.cpp 跑模型：选定模型后，第一条对话会自动加载，连续 ",
+		      "Runs models with the local llama.cpp: once you pick a model, the first conversation loads it automatically, and after ",
 		      config.idleUnloadMinutes ?? 5,
 		      " ",
-		      "分钟无交互会自动卸载并释放显存。"
+		      "minutes without interaction it is unloaded automatically to free VRAM."
 		    ] }),
 		    error ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.error }, children: error }) : null,
 		    notice ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.notice }, children: notice }) : null,
-		    runtimeState === "disabled" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.hint }, children: "总开关已关闭：不会监听端口，也不会拉起任何进程。" }) : null,
+		    runtimeState === "disabled" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.hint }, children: "The master switch is off: no port is listened on and no process is started." }) : null,
 		    state.runtime.visionDisabledByMtp ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.warn }, children: state.runtime.visionDisabledByMtp }) : null,
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(LaunchPanel, { launch: state.runtime.launch, loadedAt: state.runtime.loadedAt }),
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
@@ -777,44 +777,44 @@ window.__ModuleLoader__.load({
 		      ] }) }),
 		      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.metaGrid, children: [
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "当前模型：" }),
-		          state.runtime.model ? `${state.runtime.model.displayName}${state.runtime.model.quant ? ` [${state.runtime.model.quant}]` : ""}` : "未选择"
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Current model: " }),
+		          state.runtime.model ? `${state.runtime.model.displayName}${state.runtime.model.quant ? ` [${state.runtime.model.quant}]` : ""}` : "Not selected"
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "进程：" }),
-		          state.runtime.pid ? `pid ${state.runtime.pid}` : "未运行"
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Process: " }),
+		          state.runtime.pid ? `pid ${state.runtime.pid}` : "Not running"
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "入口：" }),
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Endpoint: " }),
 		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.mono, children: state.runtime.endpoint })
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "模型总数：" }),
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Total models: " }),
 		          state.runtime.modelsFound
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "推理档位：" }),
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Reasoning effort: " }),
 		          Array.isArray(state.runtime.reasoningEfforts) && state.runtime.reasoningEfforts.length > 0 ? (
 		            /* 模型模板支持哪几档，决定对话框里选的档位最后会变成什么 —— 一眼可见最省事。 */
 		            /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { style: S.mono, children: [
 		              state.runtime.reasoningEfforts.join(" / "),
-		              "（按模板重映射）"
+		              " (remapped by template)"
 		            ] })
-		          ) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: "#9a6209" }, children: "未解析出，本次不下发档位（只按开关控制思考与否）" })
+		          ) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: "#9a6209" }, children: "Not resolved; no effort is sent this run (thinking is controlled by the switch only)" })
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "多 Token 预测：" }),
-		          state.runtime.mtp ? "已开启（--spec-type draft-mtp）" : "已关闭"
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Multi-token prediction: " }),
+		          state.runtime.mtp ? "Enabled (--spec-type draft-mtp)" : "Disabled"
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "视觉投影：" }),
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Vision projector: " }),
 		          state.runtime.visionProjector ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.mono, children: state.runtime.visionProjector }) : state.runtime.visionDisabledByMtp ? (
 		            /* 开着 MTP 时这里恒为空，别让它显示成「纯文本」—— 那是另一回事。 */
-		            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: "#9a6209" }, children: "已配置，但本次被 MTP 顶掉" })
-		          ) : "未启用（纯文本）"
+		            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: "#9a6209" }, children: "Configured, but overridden by MTP this run" })
+		          ) : "Not enabled (text only)"
 		        ] }),
 		        isReady && state.runtime.unloadAt ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "自动卸载：" }),
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Auto-unload: " }),
 		          new Date(state.runtime.unloadAt).toLocaleTimeString()
 		        ] }) : null
 		      ] }),
@@ -826,8 +826,8 @@ window.__ModuleLoader__.load({
 		            type: "button",
 		            style: { ...S.button, ...busyAny ? S.buttonDisabled : {} },
 		            disabled: busyAny,
-		            onClick: () => void act("scan", () => runAction("scan"), "已重新扫描模型目录"),
-		            children: busy === "scan" ? "扫描中…" : "重新扫描"
+		            onClick: () => void act("scan", () => runAction("scan"), "Model directory rescanned"),
+		            children: busy === "scan" ? "Scanning\u2026" : "Rescan"
 		          }
 		        ),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
@@ -836,8 +836,8 @@ window.__ModuleLoader__.load({
 		            type: "button",
 		            style: { ...S.button, ...busyAny || isReady ? S.buttonDisabled : {} },
 		            disabled: busyAny || isReady,
-		            onClick: () => void act("start", () => runAction("start"), "模型已加载"),
-		            children: busy === "start" ? "加载中…" : "立即加载"
+		            onClick: () => void act("start", () => runAction("start"), "Model loaded"),
+		            children: busy === "start" ? "Loading\u2026" : "Load now"
 		          }
 		        ),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
@@ -846,11 +846,11 @@ window.__ModuleLoader__.load({
 		            type: "button",
 		            style: { ...S.button, ...busyAny || !isReady ? S.buttonDisabled : {} },
 		            disabled: busyAny || !isReady,
-		            onClick: () => void act("stop", () => runAction("stop"), "已卸载，显存已释放"),
-		            children: busy === "stop" ? "卸载中…" : "卸载"
+		            onClick: () => void act("stop", () => runAction("stop"), "Unloaded, VRAM freed"),
+		            children: busy === "stop" ? "Unloading\u2026" : "Unload"
 		          }
 		        ),
-		        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", style: S.button, disabled: busyAny, onClick: () => void load({ silent: true }), children: "刷新状态" })
+		        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", style: S.button, disabled: busyAny, onClick: () => void load({ silent: true }), children: "Refresh status" })
 		      ] })
 		    ] }),
 		    state.form.groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.card, children: [
@@ -873,19 +873,19 @@ window.__ModuleLoader__.load({
 		      ))
 		    ] }, group.id)),
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.card, children: [
-		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h3", { style: S.groupTitle, children: "目录约定" }),
-		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.groupHint, children: "自己去 llama.cpp 的 release 页面下载 llama-server，把 GGUF 模型放进模型目录。放好后回到这里点「重新扫描」。" }),
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h3", { style: S.groupTitle, children: "Directories" }),
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.groupHint, children: 'Download llama-server from the llama.cpp releases page and put GGUF models into the model directory. Once done, come back here and click "Rescan".' }),
 		      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { ...S.metaGrid, marginTop: 0 }, children: [
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "模型目录：" }),
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Model directory: " }),
 		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.mono, children: state.form.paths.modelsDir })
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "运行时目录：" }),
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "Runtime directory: " }),
 		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.mono, children: state.form.paths.runtimeDir })
 		        ] }),
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "用户配置：" }),
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.metaLabel, children: "User config: " }),
 		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.mono, children: state.form.paths.configFile })
 		        ] })
 		      ] })
@@ -898,7 +898,7 @@ window.__ModuleLoader__.load({
 		          style: { ...S.buttonPrimary, ...busyAny || dirtyCount === 0 || invalid.length > 0 ? S.buttonDisabled : {} },
 		          disabled: busyAny || dirtyCount === 0 || invalid.length > 0,
 		          onClick: save,
-		          children: busy === "save" ? "保存中…" : "保存"
+		          children: busy === "save" ? "Saving\u2026" : "Save"
 		        }
 		      ),
 		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
@@ -908,7 +908,7 @@ window.__ModuleLoader__.load({
 		          style: { ...S.button, ...dirtyCount === 0 ? S.buttonDisabled : {} },
 		          disabled: dirtyCount === 0,
 		          onClick: discard,
-		          children: "放弃修改"
+		          children: "Discard changes"
 		        }
 		      ),
 		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
@@ -918,14 +918,14 @@ window.__ModuleLoader__.load({
 		          style: { ...S.button, ...busyAny ? S.buttonDisabled : {} },
 		          disabled: busyAny,
 		          onClick: () => {
-		            if (window.confirm("恢复为部署默认值？这会清空你在这个页面上做过的所有修改。")) {
-		              void act("reset", () => resetConfig(), "已恢复默认值");
+		            if (window.confirm("Restore the deployment defaults? This clears all changes you made on this page.")) {
+		              void act("reset", () => resetConfig(), "Defaults restored");
 		            }
 		          },
-		          children: busy === "reset" ? "恢复中…" : "恢复默认"
+		          children: busy === "reset" ? "Restoring\u2026" : "Restore defaults"
 		        }
 		      ),
-		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.dirty, children: dirtyCount > 0 ? `有 ${dirtyCount} 项未保存` : "没有未保存的修改" })
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.dirty, children: dirtyCount > 0 ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}` : "No unsaved changes" })
 		    ] })
 		  ] });
 		}
@@ -937,8 +937,8 @@ window.__ModuleLoader__.load({
 		  const unrecognized = Array.isArray(launch?.unrecognized) ? launch.unrecognized : [];
 		  if (lines.length === 0) {
 		    return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.card, children: [
-		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.subTitle, children: "本次启动参数" }),
-		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.groupHint, children: "模型尚未加载。加载完成后，这里会列出本次**真正下发给 llama-server** 的全部参数。" })
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.subTitle, children: "Launch parameters" }),
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { style: S.groupHint, children: "The model is not loaded yet. Once loading finishes, this lists **all parameters actually sent to llama-server** for this run." })
 		    ] });
 		  }
 		  const groups = [];
@@ -954,7 +954,7 @@ window.__ModuleLoader__.load({
 		  const copy = () => {
 		    const text = launch.commandLine ?? lines.join("\n");
 		    const done = (ok) => {
-		      setCopied(ok ? "已复制" : "复制失败");
+		      setCopied(ok ? "Copied" : "Copy failed");
 		      setTimeout(() => setCopied(""), 1500);
 		    };
 		    try {
@@ -968,12 +968,12 @@ window.__ModuleLoader__.load({
 		  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.card, children: [
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.panelHead, children: [
 		      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("p", { style: { ...S.subTitle, margin: 0 }, children: [
-		        "本次启动参数",
-		        when ? ` · ${when}` : "",
-		        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { ...S.factNote, marginLeft: 8 }, children: "（服务器实际收到的全部参数）" })
+		        "Launch parameters",
+		        when ? ` \xB7 ${when}` : "",
+		        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { ...S.factNote, marginLeft: 8 }, children: "(all parameters the server actually received)" })
 		      ] }),
 		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.panelHeadSpacer }),
-		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { style: S.button, onClick: copy, children: copied || "复制命令行" })
+		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { style: S.button, onClick: copy, children: copied || "Copy command line" })
 		    ] }),
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("pre", { style: S.codeBlock, children: lines.join("\n") }),
 		    groups.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: S.factGrid, children: groups.flatMap((group) => [
@@ -993,8 +993,8 @@ window.__ModuleLoader__.load({
 		    ]) }) : null,
 		    notices.map((text, index) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.banner, ...S.hint, marginTop: 12, marginBottom: 0 }, children: text }, `notice-${index}`)),
 		    unrecognized.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { ...S.banner, ...S.warn, marginTop: 12, marginBottom: 0 }, children: [
-		      "这几个选项不在识别表里（可能来自「附加参数」）：",
-		      unrecognized.join("、")
+		      'These options are not recognized (they may come from "Extra arguments"): ',
+		      unrecognized.join(", ")
 		    ] }) : null
 		  ] });
 		}
@@ -1006,18 +1006,18 @@ window.__ModuleLoader__.load({
 		    if (isModelPicker) {
 		      return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
 		        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("select", { style: S.select, value: value ?? "", onChange: (e) => onChange(e.target.value), children: [
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "", children: "（未选择）" }),
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "", children: "(Not selected)" }),
 		          models.map((m) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("option", { value: m.id, disabled: !m.complete, children: [
 		            m.displayName,
-		            m.quant ? ` · ${m.quant}` : "",
-		            m.params ? ` · ${m.params}` : "",
-		            " · ",
+		            m.quant ? ` \xB7 ${m.quant}` : "",
+		            m.params ? ` \xB7 ${m.params}` : "",
+		            " \xB7 ",
 		            m.sizeText,
-		            m.complete ? "" : "（分片不完整）",
-		            m.hasVisionProjector ? " · 含视觉投影" : ""
+		            m.complete ? "" : "(incomplete shards)",
+		            m.hasVisionProjector ? " \xB7 with vision projector" : ""
 		          ] }, m.id))
 		        ] }),
-		        models.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: S.modelMeta, children: "模型目录里还没有 .gguf 文件。把模型放进去后点上面的「重新扫描」。" }) : null
+		        models.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: S.modelMeta, children: 'No .gguf files in the model directory yet. Add models and click "Rescan" above.' }) : null
 		      ] });
 		    }
 		    if (isVisionPicker) {
@@ -1032,30 +1032,30 @@ window.__ModuleLoader__.load({
 		            value: selected,
 		            onChange: (e) => onChange(e.target.value),
 		            children: [
-		              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "", children: "（自动：同目录能唯一确定归属时自动关联）" }),
+		              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "", children: "(Auto: links automatically when a file in the same directory can be uniquely matched)" }),
 		              visionFiles.map((f) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("option", { value: f.id, children: [
 		                f.id,
-		                " · ",
+		                " \xB7 ",
 		                f.sizeText
 		              ] }, f.id)),
 		              missing ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("option", { value: selected, children: [
 		                selected,
-		                "（不在扫描结果里）"
+		                " (not in scan results)"
 		              ] }) : null
 		            ]
 		          }
 		        ),
-		        visionLockedByMtp ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.modelMeta, color: "#9a6209", opacity: 1 }, children: "⚠ 已开启「多 Token 预测（MTP）」：MTP 与图像输入不能共存，本次加载不会下发 --mmproj。 这里选的文件不会被清空，关掉 MTP 即恢复生效；需要看图请先关掉 MTP。" }) : null,
-		        !visionLockedByMtp && visionFiles.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: S.modelMeta, children: "模型目录里还没有 mmproj-*.gguf。需要图像输入时把视觉投影文件放进模型目录，再点上面的「重新扫描」； 纯文本模型保持「自动」即可。" }) : null,
-		        !visionLockedByMtp && missing ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.modelMeta, color: "#b02525", opacity: 1 }, children: "⚠ 选中的文件已不在模型目录里（或无权限读取）。加载时会被忽略或导致 --mmproj 报错，请重新选择。" }) : null,
-		        !visionLockedByMtp && !missing && selected === "" && visionFiles.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: S.modelMeta, children: "当前是「自动」：只有与模型同目录、且能唯一确定归属的 mmproj 才会随模型一起加载。" }) : null
+		        visionLockedByMtp ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.modelMeta, color: "#9a6209", opacity: 1 }, children: '\u26A0 "Multi-token prediction (MTP)" is enabled: MTP and image input cannot coexist, so --mmproj is not sent for this load. The file selected here is not cleared; it takes effect again once MTP is turned off. To use images, turn MTP off first.' }) : null,
+		        !visionLockedByMtp && visionFiles.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: S.modelMeta, children: 'No mmproj-*.gguf files in the model directory yet. If you need image input, put the vision projector file into the model directory and click "Rescan" above; text-only models can stay on "Auto".' }) : null,
+		        !visionLockedByMtp && missing ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { ...S.modelMeta, color: "#b02525", opacity: 1 }, children: "\u26A0 The selected file is no longer in the model directory (or cannot be read). It will be ignored on load or cause a --mmproj error; please select again." }) : null,
+		        !visionLockedByMtp && !missing && selected === "" && visionFiles.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: S.modelMeta, children: 'Currently "Auto": only an mmproj in the same directory as the model, with unambiguous ownership, is loaded together with the model.' }) : null
 		      ] });
 		    }
 		    switch (field.kind) {
 		      case "boolean":
 		        return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.checkboxRow, children: [
 		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { type: "checkbox", checked: value === true, onChange: (e) => onChange(e.target.checked) }),
-		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { fontSize: 12, opacity: 0.7 }, children: value === true ? "开启" : "关闭" })
+		          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { fontSize: 12, opacity: 0.7 }, children: value === true ? "On" : "Off" })
 		        ] });
 		      case "number":
 		        return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
@@ -1087,30 +1087,30 @@ window.__ModuleLoader__.load({
 		  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.field, children: [
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: S.label, children: [
 		      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: field.label }),
-		      overridden ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.overridden, children: "已覆盖" }) : null
+		      overridden ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: S.overridden, children: "Overridden" }) : null
 		    ] }),
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { children: control() }),
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
 		      "button",
 		      {
 		        type: "button",
-		        title: "恢复为默认值",
+		        title: "Restore to default",
 		        style: { ...S.button, fontSize: 11, lineHeight: "22px", padding: "0 8px" },
 		        onClick: onRevert,
-		        children: "默认"
+		        children: "Default"
 		      }
 		    ),
 		    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { ...S.desc, ...invalid ? { color: "#b02525", opacity: 1 } : {} }, children: [
-		      invalid ? "JSON 格式不对，保存会被阻止：" : "",
+		      invalid ? "Invalid JSON format, saving is blocked: " : "",
 		      field.description
 		    ] })
 		  ] });
 		}
-
+		
 		// client/src/index.jsx
 		var NS = "local-model";
 		var zh = {
-		  title: "本地模型"
+		  title: "Local model"
 		};
 		var en = {
 		  title: "Local model"
@@ -1137,7 +1137,7 @@ window.__ModuleLoader__.load({
 		            try {
 		              return ctx.locale.bind(NS)("title");
 		            } catch {
-		              return "本地模型";
+		              return "Local model";
 		            }
 		          },
 		          locale: NS
@@ -1145,12 +1145,13 @@ window.__ModuleLoader__.load({
 		        LocalModelSection
 		      );
 		    } catch (error) {
-		      console.warn("[local-model] 注册设置分区失败：", error && error.message ? error.message : error);
+		      console.warn("[local-model] Failed to register settings section:", error && error.message ? error.message : error);
 		      return () => {
 		      };
 		    }
 		  });
 		}
+		
 		return module.exports;
 	}
 });
